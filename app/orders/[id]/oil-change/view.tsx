@@ -1,4 +1,5 @@
 "use client";
+import { asset } from "@/lib/demo/asset";
 import { inventorySearchText, matchesSearch, postgrestSearchText } from "@/lib/domain/search";
 import { isOilCandidate, isOilFilter, saleSource } from "@/lib/domain/oil-change";
 
@@ -379,7 +380,7 @@ export default function OilChangePage() {
   return <main className="container stack">
     <section className="brand-hero">
       <div><div className="eyebrow">SERVICIO · ACEITE · INVENTARIO</div><h1>Cambio de aceite</h1><p>{order?.order_number ?? "Orden"} · {customer?.name || customer?.phone || "Cliente"} · {vehicle?.plate || `${vehicle?.make ?? ""} ${vehicle?.model ?? ""}`.trim()}</p></div>
-      <img src="/lubricenter-logo.png" alt="Lubricenter" />
+      <img src={asset("/lubricenter-logo.png")} alt="Lubricenter" />
     </section>
 
     {error && <div className="error">{error}</div>}

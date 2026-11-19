@@ -287,8 +287,6 @@ function casheaSale(order: Row, offset: number) {
   const initial = r2(new D(ref).mul(0.4)), financed = r2(new D(ref).minus(initial)), each = r2(new D(financed).div(3));
   const id = `csh-${pad(++casheaSeq, 3)}`;
   payment(order, pick(["TRANSFER_BDV", "TRANSFER_BNC"]), "VES", ves(initial), when);
-  const rcv = add("receivables", { id: `rcv-${pad((T.receivables?.length ?? 0) + 1, 3)}`, order_id: order.id, debtor_type: "CASHEA", customer_id: order.customer_id, principal_ves: ves(financed), principal_ref: financed,
-    outstanding_ves: ves(financed), status: "OPEN", due_date: day(offset + 42), created_at: when, closed_at: null, principal_usd: usd(financed), outstanding_fraction: 1 });
   let paidCount = 0;
   const insts = [1, 2, 3].map(no => {
     const amount = no === 3 ? r2(new D(financed).minus(new D(each).mul(2))) : each;
@@ -301,11 +299,7 @@ function casheaSale(order: Row, offset: number) {
       paid_ref: status === "PAID" ? amount : 0, paid_ves_actual: status === "PAID" ? ves(amount) : null, status, paid_at: status === "PAID" ? at(Math.min(due, 0), 11) : null, updated_at: at(Math.min(due, 0), 11),
       verified_rule: status === "PAID" ? pick(["A", "B"]) : null });
   });
-  const remaining = insts.filter(i => i.status !== "PAID").reduce((a, i) => a.plus(i.amount_ref as number), new D(0));
-  rcv.outstanding_fraction = r4(remaining.div(financed));
-  rcv.outstanding_ves = ves(r2(remaining));
-  if (remaining.isZero()) { rcv.status = "PAID"; rcv.closed_at = insts[2].paid_at; }
-  add("cashea_sales", { id, order_id: order.id, receivable_id: rcv.id, status: paidCount === 3 ? "SETTLED" : "ACTIVE", initial_percent: 40, commission_percent: 4,
+  add("cashea_sales", { id, order_id: order.id, receivable_id: null, status: paidCount === 3 ? "SETTLED" : "ACTIVE", initial_percent: 40, commission_percent: 4,
     gross_ref: ref, gross_ves_snapshot: ves(ref), initial_ref: initial, initial_ves_snapshot: ves(initial), financed_ref: financed, commission_ref: r2(new D(ref).mul(0.04)),
     commission_ves_snapshot: ves(r2(new D(ref).mul(0.04))), bcv_rate_snapshot: BCV, initial_payment_method: "TRANSFER_BDV", cashea_reference: `EJ${pad(100000 + casheaSeq * 37, 7)}`,
     created_at: when, settled_at: paidCount === 3 ? insts[2].paid_at : null, created_by: null, ownership_status: "OWN", ownership_reason: null, ownership_evidence: null });
@@ -330,6 +324,16 @@ fixed(makeOrder(-40, "STORE", "CASH_VES", { status: "CANCELLED" }), "Orden anula
 // Abierta hoy en el taller y otra esperando repuesto.
 fixed(makeOrder(0, "WORKSHOP", "BDV", { status: "OPEN", workflow: "IN_PROGRESS" }), "Orden abierta en el taller");
 fixed(makeOrder(0, "OIL", "BDV", { status: "OPEN" }), "Cambio de aceite en curso");
+
+// Ventas de hoy temprano, para que Inicio tenga cifras del día.
+for (const [k, pay] of (["BDV", "CASH_USD", "BNC", "ZELLE"] as PayPlan[]).entries()) {
+  const o = makeOrder(0, pick(["STORE", "OIL", "LITERS"] as Kind[]), pay);
+  const t = at(0, 8, 5 + k * 12);
+  o.opened_at = o.created_at = o.closed_at = o.business_at = o.workflow_updated_at = t;
+  for (const p of (T.payments ?? []).filter(p => p.order_id === o.id)) p.paid_at = p.created_at = t;
+  for (const m of (T.inventory_movements ?? []).filter(m => (T.order_items ?? []).some(i => i.id === m.order_item_id && i.order_id === o.id))) m.occurred_at = m.created_at = t;
+  for (const sr of (T.service_records ?? []).filter(r => r.order_id === o.id)) sr.performed_at = sr.created_at = t;
+}
 
 // Volumen: ~200 órdenes en 90 días
 const KINDS: Kind[] = ["STORE", "STORE", "STORE", "OIL", "OIL", "OIL", "OIL_PAID", "WORKSHOP", "ELECTRO", "MIXED", "LITERS"];

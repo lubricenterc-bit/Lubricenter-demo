@@ -1,5 +1,6 @@
 "use client";
 
+import { asset } from "@/lib/demo/asset";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -134,7 +135,7 @@ export default function VehiclePage() {
           <h1>{vehicle.plate || `${vehicle.make ?? ""} ${vehicle.model ?? ""}`.trim() || "Vehículo"}</h1>
           <p>{[vehicle.make, vehicle.model, vehicle.year, vehicle.engine ? `Motor ${vehicle.engine}` : null].filter(Boolean).join(" · ")}</p>
         </div>
-        <img src="/lubricenter-logo.png" alt="Lubricenter" />
+        <img src={asset("/lubricenter-logo.png")} alt="Lubricenter" />
       </section>
 
       <section className="grid grid-2">

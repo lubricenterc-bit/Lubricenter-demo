@@ -286,7 +286,7 @@ export function OrderWorkspace({ initialOrderId }: { initialOrderId?: string }) 
   if (loading) return <LoadingBlock label="Cargando orden…" kind="detail" />;
 
   return <div className="stack mesa-order-workspace">
-    <section className="card brand-card"><div className="row-between"><div><div className="muted small">ORDEN</div><div className="money-lg">{order?.order_number ?? "Nueva orden"}</div>{order && <div className="muted small">Se guarda automáticamente en la nube.</div>}</div><span className={`pill ${status === "CLOSED" ? "ok" : status === "OPEN" ? "warn" : ""}`}>{status === "OPEN" ? "ABIERTA" : status === "CLOSED" ? "CERRADA" : "CANCELADA"}</span></div></section>
+    <section className="card brand-card"><div className="row-between"><div><div className="muted small">ORDEN</div><div className="money-lg">{order?.order_number ?? "Nueva orden"}</div>{order && <div className="muted small">Se guarda automáticamente en este navegador.</div>}</div><span className={`pill ${status === "CLOSED" ? "ok" : status === "OPEN" ? "warn" : ""}`}>{status === "OPEN" ? "ABIERTA" : status === "CLOSED" ? "CERRADA" : "CANCELADA"}</span></div></section>
     <CheckoutError message={error} />
     {notice && <div className="success" role="status">{notice}</div>}
     {!locked && <OrderDateEditor date={order?.opened_at} ensureOrder={ensureOrder} onSaved={async id => { await refresh(id); setNotice("Fecha de atención guardada."); }} />}

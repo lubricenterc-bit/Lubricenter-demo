@@ -16,7 +16,7 @@
   .os-masthead { position: sticky; top: 0; z-index: 34; background: rgb(247 245 241 / 92%); backdrop-filter: saturate(1.2) blur(14px); -webkit-backdrop-filter: saturate(1.2) blur(14px); }
   .os-masthead-in { display: flex; align-items: center; gap: 26px; max-width: 1440px; height: 76px; margin: 0 auto; padding: 0 clamp(16px, 2.8vw, 40px); }
   .os-lockup { display: block; flex: none; color: var(--ink); border-radius: 8px; }
-  .os-wordmark { display: block; width: 136px; aspect-ratio: 560 / 128; background: currentColor; -webkit-mask: url("/brand/lubricenter-wordmark.png") center / contain no-repeat; mask: url("/brand/lubricenter-wordmark.png") center / contain no-repeat; }
+  .os-wordmark { display: block; width: 136px; aspect-ratio: 560 / 128; background: currentColor; -webkit-mask: url("../../public/brand/lubricenter-wordmark.png") center / contain no-repeat; mask: url("../../public/brand/lubricenter-wordmark.png") center / contain no-repeat; }
   .os-modules { position: relative; display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
   .os-modules::-webkit-scrollbar { display: none; }
   .os-modules a { position: relative; display: flex; align-items: center; height: 40px; padding: 0 12px; border-radius: 999px; font-size: 14.5px; font-weight: 500; color: var(--ink-2); white-space: nowrap; transition: color .15s ease, background-color .15s ease; }

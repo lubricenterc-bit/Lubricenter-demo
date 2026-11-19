@@ -1,5 +1,6 @@
 "use client";
 
+import { asset } from "@/lib/demo/asset";
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useUrlState } from "@/lib/use-url-state";
@@ -67,7 +68,7 @@ function CustomersScreen() {
   return <main className="container stack">
     <section className="brand-hero">
       <div><div className="eyebrow">CRM · BASE MAESTRA</div><h1>Clientes</h1><p>Encuentra a una persona por nombre, teléfono, documento o vehículo y abre toda su relación con Lubricenter.</p></div>
-      <img src="/lubricenter-logo.png" alt="Lubricenter" />
+      <img src={asset("/lubricenter-logo.png")} alt="Lubricenter" />
     </section>
 
     {error && <div className="error">{error}</div>}

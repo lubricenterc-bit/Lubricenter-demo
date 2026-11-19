@@ -46,7 +46,7 @@ export const MECHANIC_HOME = "/mecanico";
 export const USERS_PATH = "/settings/usuarios";
 
 export function homeFor(profile: StaffProfile | undefined) {
-  return profile === "MECHANIC" ? MECHANIC_HOME : "/";
+  return profile === "MECHANIC" ? MECHANIC_HOME : "/inicio";
 }
 
 /** ¿Este perfil puede abrir esta ruta? Si no, la app lo lleva a su inicio. */

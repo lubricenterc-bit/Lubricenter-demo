@@ -1,5 +1,6 @@
 "use client";
 
+import { asset } from "@/lib/demo/asset";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -117,7 +118,7 @@ export default function CustomerBalanceDetailPage() {
   const refundValue = pocket === "USD" ? fmtRef(Number(amount||0)) : fmtVes(Number(amount||0)*rates.bcv);
 
   return <main className="container stack">
-    <section className="brand-hero"><div><div className="eyebrow">CRM · SALDO A FAVOR</div><h1>{customer?.name || "Cliente"}</h1><p>{customer?.phone || "Sin teléfono"} · El dinero recibido y su uso quedan en un historial.</p></div><img src="/lubricenter-logo.png" alt="Lubricenter" /></section>
+    <section className="brand-hero"><div><div className="eyebrow">CRM · SALDO A FAVOR</div><h1>{customer?.name || "Cliente"}</h1><p>{customer?.phone || "Sin teléfono"} · El dinero recibido y su uso quedan en un historial.</p></div><img src={asset("/lubricenter-logo.png")} alt="Lubricenter" /></section>
     <div className="row"><Link className="btn" href={`/customers/${id}`}>Ficha del cliente</Link></div>
     {error && <div className="error" role="alert">{error}</div>}{notice && <div className="success" role="status">{notice}</div>}
     {loading ? <LoadingBlock label="Cargando saldo…" kind="detail" /> : <>

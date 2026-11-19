@@ -35,17 +35,24 @@ function pages(dir: string): string[] {
   });
 }
 
+// Los manejadores viven en lib/demo/rpc/<módulo>.ts como claves «nombre_rpc: (args, ctx) => …».
 const handlersDir = path.join(root, "lib/demo/rpc");
 const rpcHandlers = new Set(
-  fs.existsSync(handlersDir) ? fs.readdirSync(handlersDir).filter(f => f.endsWith(".ts") && f !== "index.ts").map(f => f.replace(/\.ts$/, "")) : [],
+  fs.existsSync(handlersDir)
+    ? fs.readdirSync(handlersDir).filter(f => f.endsWith(".ts") && !["index.ts", "ctx.ts"].includes(f))
+        .flatMap(f => [...fs.readFileSync(path.join(handlersDir, f), "utf8").matchAll(/^\s{2}([a-z0-9_]+):\s*(?:async\s*)?\(/gm)].map(m => m[1]))
+    : [],
 );
+// RPC que se llaman con el nombre en una variable (lib/session-cache.ts).
+const DYNAMIC_RPC = ["my_profile", "finance_role", "can_administer_orders"];
 const tablesFile = path.join(root, "lib/demo/tables.ts");
 const tableHandlers = new Set(
   fs.existsSync(tablesFile) ? [...fs.readFileSync(tablesFile, "utf8").matchAll(/^\s*"?([a-z0-9_]+)"?\s*:/gm)].map(m => m[1]) : [],
 );
 
 const missing = new Map<string, Set<string>>();
-let rpcTotal = new Set<string>(), tabTotal = new Set<string>();
+let rpcTotal = new Set<string>(DYNAMIC_RPC), tabTotal = new Set<string>();
+for (const r of DYNAMIC_RPC) if (!rpcHandlers.has(r)) missing.set(`rpc ${r}`, new Set(["lib/session-cache.ts"]));
 for (const page of pages(path.join(root, "app"))) {
   const src = fs.readFileSync(page, "utf8");
   if (src.includes("FullVersionOnly")) continue; // módulo fuera de la muestra

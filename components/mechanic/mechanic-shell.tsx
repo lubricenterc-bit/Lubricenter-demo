@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizePath } from "@/lib/demo/paths";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { OsIcon, type OsIconName } from "@/components/os-icon";
@@ -13,7 +14,7 @@ const TABS: { href: string; label: string; icon: OsIconName }[] = [
 
 /** App del mecánico en el teléfono: solo sus vehículos, su historial y cotizar mano de obra. */
 export function MechanicShell({ profile, onSignOut, children }: { profile: MyProfile; onSignOut: () => void; children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = normalizePath(usePathname());
   const active = (href: string) => href === "/mecanico" ? pathname === href : pathname === href || pathname.startsWith(href + "/");
   return <div className="shell os-theme os-mech-shell">
     <header className="os-mech-head">

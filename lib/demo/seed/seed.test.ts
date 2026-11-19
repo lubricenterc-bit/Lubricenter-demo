@@ -35,7 +35,8 @@ describe("cuadre", () => {
   it("órdenes cerradas: lo cobrado + lo financiado + lo adeudado = total", () => {
     for (const o of (t.orders as R[]).filter(o => o.status === "CLOSED")) {
       const paid = (t.payments as R[]).filter(p => p.order_id === o.id && !p.receivable_id).reduce((a, p) => a + p.value_ref, 0);
-      const debt = (t.receivables as R[]).filter(r => r.order_id === o.id).reduce((a, r) => a + r.principal_ref, 0);
+      const debt = (t.receivables as R[]).filter(r => r.order_id === o.id).reduce((a, r) => a + r.principal_ref, 0)
+        + (t.cashea_sales as R[]).filter(c => c.order_id === o.id).reduce((a, c) => a + c.financed_ref, 0);
       expect(Math.abs(paid + debt - o.total_ref), o.order_number).toBeLessThanOrEqual(0.01);
     }
   });

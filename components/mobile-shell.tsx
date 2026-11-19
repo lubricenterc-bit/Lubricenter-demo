@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizePath } from "@/lib/demo/paths";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { gotinSvg } from "@/lib/brand-art";
@@ -21,7 +22,7 @@ function directionFor(path: string): "forward" | "back" | "none" {
  * `refreshKey` vuelve a montar la pantalla (y repite sus consultas) tras «deslizar para refrescar».
  */
 export function PageStage({ children, refreshKey }: { children: ReactNode; refreshKey: number }) {
-  const pathname = usePathname();
+  const pathname = normalizePath(usePathname());
   // Se decide al pintar la pantalla nueva, para que entre ya con la animación correcta.
   const seen = useRef<{ path: string; dir: "forward" | "back" | "none" } | null>(null);
   if (seen.current?.path !== pathname) seen.current = { path: pathname, dir: directionFor(pathname) };

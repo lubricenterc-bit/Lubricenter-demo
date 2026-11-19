@@ -1,6 +1,6 @@
 "use client";
 
-import { isDemoBarePath } from "@/lib/demo/paths";
+import { isDemoBarePath, normalizePath } from "@/lib/demo/paths";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -9,7 +9,7 @@ import { isPublicDemoPath } from "@/lib/tunnels/paths";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = normalizePath(usePathname());
   const [ready, setReady] = useState(isDemoBarePath(pathname));
   const publicDesignLab = (pathname === "/design-lab" && process.env.NEXT_PUBLIC_DESIGN_LAB_PUBLIC === "1")
     || isPublicDemoPath(pathname, { NODE_ENV: process.env.NODE_ENV, NEXT_PUBLIC_TUNNEL_DEMO_PUBLIC: process.env.NEXT_PUBLIC_TUNNEL_DEMO_PUBLIC });

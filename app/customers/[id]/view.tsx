@@ -1,5 +1,6 @@
 "use client";
 
+import { asset } from "@/lib/demo/asset";
 import { OrderPreviewButton, useOrderPreviewCache } from "@/components/orders/order-preview-panel";
 import { ContactPermissionBanner } from "@/components/crm/contact-permission-banner";
 import Link from "next/link";
@@ -110,7 +111,7 @@ export default function CustomerDetailPage() {
   return <main className="container stack">
     {error && <div className="error">{error}</div>}{notice && <div className="success">{notice}</div>}
     {customer && <>
-      <section className="brand-hero"><div><div className="eyebrow">CRM · FICHA MAESTRA</div><h1>{customer.name || "Cliente sin nombre"}</h1><p>{[customer.phone, customer.document_id].filter(Boolean).join(" · ") || "Sin datos de contacto"}</p></div><img src="/lubricenter-logo.png" alt="Lubricenter" /></section>
+      <section className="brand-hero"><div><div className="eyebrow">CRM · FICHA MAESTRA</div><h1>{customer.name || "Cliente sin nombre"}</h1><p>{[customer.phone, customer.document_id].filter(Boolean).join(" · ") || "Sin datos de contacto"}</p></div><img src={asset("/lubricenter-logo.png")} alt="Lubricenter" /></section>
 
       <ContactPermissionBanner customerId={id} />
       <div className="row crm-action-bar"><Link href={`/customers/${id}/balance`} className="btn">$ Saldo a favor</Link><Link href={`/service-history?customer=${id}`} className="btn">Historial de mantenimiento</Link><button className="btn" onClick={() => setShowEdit(true)}>Editar datos</button><button className="btn btn-primary" disabled={busy} onClick={() => startOrder()}>+ Nueva orden</button></div>

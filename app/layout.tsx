@@ -1,3 +1,4 @@
+import { asset } from "@/lib/demo/asset";
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
@@ -23,6 +24,7 @@ import "./theme/staff.css";
 import "./theme/demo.css";
 import "./tunnel.css";
 import { AuthGuard } from "@/components/auth-guard";
+import { DemoBar } from "@/components/demo/demo-bar";
 import { AppShell } from "@/components/app-shell";
 
 const switzer = localFont({
@@ -46,10 +48,10 @@ export const metadata: Metadata = {
   applicationName: "Lubricenter OS",
   icons: {
     icon: [
-      { url: "/icon", type: "image/png", sizes: "64x64" },
-      { url: "/lubricenter-brand.svg", type: "image/svg+xml" }
+      { url: asset("/icon"), type: "image/png", sizes: "64x64" },
+      { url: asset("/lubricenter-brand.svg"), type: "image/svg+xml" }
     ],
-    apple: [{ url: "/apple-icon", sizes: "180x180", type: "image/png" }]
+    apple: [{ url: asset("/apple-icon"), sizes: "180x180", type: "image/png" }]
   },
   appleWebApp: {
     capable: true,
@@ -74,6 +76,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="es" className={switzer.variable}>
       <body>
+        <DemoBar />
         <AuthGuard>
           <AppShell>{children}</AppShell>
         </AuthGuard>

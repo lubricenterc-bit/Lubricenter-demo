@@ -1,6 +1,6 @@
 "use client";
 
-import { isDemoBarePath } from "@/lib/demo/paths";
+import { isDemoBarePath, normalizePath } from "@/lib/demo/paths";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,7 +26,7 @@ import {
 } from "@/lib/navigation";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = normalizePath(usePathname());
   const publicDesignLab = pathname === "/design-lab" && process.env.NEXT_PUBLIC_DESIGN_LAB_PUBLIC === "1";
   const router = useRouter();
   const currentModule = moduleForPath(pathname);

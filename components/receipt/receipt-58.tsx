@@ -1,3 +1,4 @@
+import { asset } from "@/lib/demo/asset";
 import {
   amountIn, footerPhrase, installmentStatus, km, lineDetail, qtyText, ref, shortDate, shortTime, statusBand, ves,
   type ReceiptData,
@@ -15,7 +16,7 @@ export function Receipt58({ data }: { data: ReceiptData }) {
     {band && <div className="lc-r-band">{band}</div>}
 
     <header className="lc-r-head">
-      <img className="lc-r-logo" src="/brand/lubricenter-mono.svg" alt="" width={64} height={64} />
+      <img className="lc-r-logo" src={asset("/brand/lubricenter-mono.svg")} alt="" width={64} height={64} />
       <div className="lc-r-brand">LUBRICENTER</div>
       {h.branch && <div className="lc-r-branch">{h.branch}</div>}
       {contact.map(c => <div className="lc-r-contact" key={c}>{c}</div>)}

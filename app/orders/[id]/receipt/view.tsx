@@ -1,5 +1,6 @@
 "use client";
 
+import { asset } from "@/lib/demo/asset";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -134,7 +135,7 @@ export default function ReceiptPage() {
 
     {order && <article className="receipt-paper">
       <header className="receipt-header">
-        <img src="/lubricenter-logo.png" alt="Lubricenter" />
+        <img src={asset("/lubricenter-logo.png")} alt="Lubricenter" />
         <div><div className="receipt-brand">LUBRICENTER</div><div className="receipt-tagline">Cuidamos lo que te mueve.</div></div>
       </header>
 

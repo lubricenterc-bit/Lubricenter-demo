@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizePath } from "@/lib/demo/paths";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pageLabelForPath, parentForPath } from "@/lib/navigation";
@@ -31,7 +32,7 @@ function restoreScroll(y: number) {
  * Va dentro de <Suspense> en el shell porque usa useSearchParams.
  */
 export function BackButton() {
-  const pathname = usePathname();
+  const pathname = normalizePath(usePathname());
   const search = useSearchParams().toString();
   const router = useRouter();
   const [target, setTarget] = useState<Target | null>(null);
@@ -41,7 +42,7 @@ export function BackButton() {
     pushEntry({ path: pathname, search, title: pageLabelForPath(pathname) });
     const prev = previous(pathname);
     let next: Target | null = null;
-    if (pathname !== "/") {
+    if (pathname !== "/inicio") {
       if (prev) next = { href: prev.path + prev.search, label: "Volver a " + prev.title, fromHistory: true };
       else {
         const parent = parentForPath(pathname);

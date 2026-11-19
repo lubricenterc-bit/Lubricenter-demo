@@ -1,5 +1,6 @@
 "use client";
 
+import { asset } from "@/lib/demo/asset";
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useUrlState } from "@/lib/use-url-state";
@@ -35,7 +36,7 @@ function ExpensesScreen() {
   useEffect(()=>{load()},[from,to]);
   const overdue=data?.invoices.filter(x=>x.status!=="PAID"&&x.status!=="VOID"&&x.due_date&&x.due_date<today)??[];
   return <main className="container stack">
-    <section className="brand-hero"><div><div className="eyebrow">COMPRAS · EGRESOS · PROVEEDORES</div><h1>Central de egresos</h1><p>Controla lo facturado, lo recibido, lo pagado y lo que todavía debes sin duplicar inventario ni salidas de dinero.</p></div><img src="/lubricenter-logo.png" alt="Lubricenter"/></section>
+    <section className="brand-hero"><div><div className="eyebrow">COMPRAS · EGRESOS · PROVEEDORES</div><h1>Central de egresos</h1><p>Controla lo facturado, lo recibido, lo pagado y lo que todavía debes sin duplicar inventario ni salidas de dinero.</p></div><img src={asset("/lubricenter-logo.png")} alt="Lubricenter"/></section>
     {error&&<div className="error">{error}</div>}
     <section className="card stack"><div className="grid grid-2"><label><span className="label">Desde</span><input className="input" type="date" value={from} max={to} onChange={e=>setFrom(e.target.value)}/></label><label><span className="label">Hasta</span><input className="input" type="date" value={to} min={from} max={today} onChange={e=>setTo(e.target.value)}/></label></div><div className="row" style={{flexWrap:"wrap"}}><button className="btn btn-primary" disabled={!canManage||loading} onClick={()=>setShowInvoice(true)}>Ingresar mercancía</button><button className="btn" disabled={!canManage||loading} onClick={()=>setSupplierEdit("NEW")}>+ Proveedor</button><button className="btn btn-ghost" disabled={!canManage||loading} onClick={()=>setShowExpense(true)}>+ Gasto directo</button><Link className="btn btn-ghost" href="/cash-close">Cuadre diario</Link></div></section>
     {loading&&<div className="card muted">Calculando egresos y cuentas por pagar…</div>}
