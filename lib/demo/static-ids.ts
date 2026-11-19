@@ -11,9 +11,15 @@ export function reserveId(entity: DemoEntity, n: number) {
   return `${entity.slice(0, 3)}-n${String(n).padStart(3, "0")}`;
 }
 
-// En F2 se suman los IDs de la semilla.
+import seed from "./seed/seed.json";
+
+const SEED_TABLE: Record<DemoEntity, string> = {
+  orders: "orders", customers: "customers", vehicles: "vehicles", purchases: "supplier_invoices", suppliers: "suppliers", "service-history": "service_records",
+};
+
 export function staticIds(entity: DemoEntity): string[] {
-  const ids: string[] = [];
+  const rows = (seed.tables as Record<string, { id?: unknown }[]>)[SEED_TABLE[entity]] ?? [];
+  const ids: string[] = rows.map(r => String(r.id));
   for (let i = 1; i <= RESERVE_SIZE[entity]; i++) ids.push(reserveId(entity, i));
   return ids;
 }
