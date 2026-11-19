@@ -26,6 +26,7 @@ import "./tunnel.css";
 import { AuthGuard } from "@/components/auth-guard";
 import { DemoBar } from "@/components/demo/demo-bar";
 import { WhatsappSheet } from "@/components/demo/whatsapp-sheet";
+import { DemoGuide } from "@/components/demo/guide";
 import { AppShell } from "@/components/app-shell";
 
 const switzer = localFont({
@@ -79,6 +80,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <DemoBar />
         <WhatsappSheet />
+        <DemoGuide />
         <AuthGuard>
           <AppShell>{children}</AppShell>
         </AuthGuard>

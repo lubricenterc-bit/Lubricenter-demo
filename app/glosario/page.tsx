@@ -1,12 +1,20 @@
-import Link from "next/link";
+import type { Metadata } from "next";
+import { DemoPage } from "@/components/demo/demo-page";
+import { GLOSSARY } from "@/lib/demo/guide/modules";
 
-export default function Page() {
+export const metadata: Metadata = { title: "Glosario · Lubricenter OS" };
+
+export default function Glosario() {
   return (
-    <main className="demo-cover">
-      <p className="demo-cover__eyebrow">Versión de muestra</p>
-      <h1>Glosario</h1>
-      <p className="demo-cover__lead">Términos del negocio explicados en palabras simples: REF, tasa BCV, tasa operativa, precio en divisas, Pago móvil, Cashea, Crédito LC, compra para el trabajo, mano de obra, electroauto, regla del 85 % y tramos de recuperación.</p>
-      <div className="demo-cover__actions"><Link className="btn btn-primary" href="/">Volver a la portada</Link><Link className="btn" href="/login/">Usar la muestra</Link></div>
-    </main>
+    <DemoPage eyebrow="Versión de muestra" title="Glosario" lead="Los términos del negocio que aparecen en las pantallas, explicados en palabras simples.">
+      <dl className="demo-glossary">
+        {GLOSSARY.map(g => (
+          <div key={g.id} id={g.id} className="demo-glossary__item">
+            <dt>{g.term}</dt>
+            <dd>{g.text}</dd>
+          </div>
+        ))}
+      </dl>
+    </DemoPage>
   );
 }

@@ -23,7 +23,7 @@ export default function LoginPage() {
   function enter(profile: DemoProfile) {
     setBusy(profile);
     const params = new URLSearchParams(window.location.search);
-    if (params.get("modo") === "prototipo" && getMode() !== "prototipo") setMode("prototipo");
+    if (params.get("modo") === "prototipo") { if (getMode() !== "prototipo") setMode("prototipo"); try { sessionStorage.setItem("lc-demo:recorrido", "0"); } catch { /* sin almacenamiento */ } }
     setProfile(profile);
     router.replace(loginReturnPath(params.get("next")) === "/" ? "/inicio/" : loginReturnPath(params.get("next")));
   }

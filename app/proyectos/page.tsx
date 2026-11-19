@@ -1,12 +1,28 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+import { DemoPage } from "@/components/demo/demo-page";
+import { PROJECTS } from "@/lib/demo/guide/projects";
 
-export default function Page() {
+export const metadata: Metadata = { title: "Proyectos · Lubricenter OS" };
+
+const tone = (s: string) => (s === "En piloto" ? "daily" : s === "En construcción" ? "use" : "proj");
+
+export default function Proyectos() {
   return (
-    <main className="demo-cover">
-      <p className="demo-cover__eyebrow">Versión de muestra</p>
-      <h1>Proyectos en curso</h1>
-      <p className="demo-cover__lead">Aquí verás los proyectos de Lubricenter OS con su estado y un prototipo navegable de cada uno: taller completo, nómina semanal, cupones de reactivación, modo túnel, agente de WhatsApp, varias sedes e ingreso del vehículo desde tablet.</p>
-      <div className="demo-cover__actions"><Link className="btn btn-primary" href="/">Volver a la portada</Link><Link className="btn" href="/login/">Usar la muestra</Link></div>
-    </main>
+    <DemoPage eyebrow="Versión de muestra" title="Proyectos en curso"
+      lead="Lo que se está diseñando y construyendo. Cada proyecto tiene un prototipo navegable con datos ficticios: muestra cómo funcionará, pero no ejecuta nada.">
+      <div className="demo-projects">
+        {PROJECTS.map(p => (
+          <article key={p.slug} className="demo-project">
+            <span className={`demo-status demo-status--${tone(p.status)}`}>{p.status}</span>
+            <h2>{p.title}</h2>
+            <p>{p.problem}</p>
+            <h3>Cómo funcionará</h3>
+            <ul>{p.how.map(h => <li key={h}>{h}</li>)}</ul>
+            <Link className="btn btn-primary" href={`/proyectos/${p.slug}/`}>Ver el prototipo</Link>
+          </article>
+        ))}
+      </div>
+    </DemoPage>
   );
 }

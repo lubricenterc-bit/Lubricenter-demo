@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { normalizePath } from "@/lib/demo/paths";
+import { guideFor } from "@/lib/demo/guide/modules";
+import { toggleGuide } from "@/components/demo/guide";
 import { DEMO_EVENT_CHANGED, DEMO_EVENT_UNAVAILABLE, getMode, getProfile, resetDemo, setMode, setProfile, type DemoMode, type DemoProfile } from "@/lib/demo/store";
 
 const PROFILE_LABEL: Record<DemoProfile, string> = { OWNER: "Dueño", ADMIN: "Administración", RECEPTION: "Recepción", MECHANIC: "Mecánico" };
@@ -41,6 +43,7 @@ export function DemoBar() {
       <div className="demo-bar" role="region" aria-label="Versión de muestra">
         <span className="demo-bar__tag">Versión de muestra<span className="demo-wide"> · datos ficticios</span>{mode === "prototipo" ? " · prototipo" : ""}</span>
         <span className="demo-bar__actions">
+          {inside && guideFor(pathname) && <button type="button" className="demo-bar__btn demo-bar__btn--help" onClick={toggleGuide}>¿Para qué sirve?</button>}
           {inside && (
             <label className="demo-bar__profile">
               <span className="sr-only">Perfil</span>

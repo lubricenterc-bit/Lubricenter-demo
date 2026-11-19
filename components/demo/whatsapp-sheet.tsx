@@ -35,7 +35,7 @@ export function WhatsappSheet() {
   }, []);
   if (!msg) return null;
   return (
-    <div className="overlay demo-wa" role="dialog" aria-modal="true" aria-label="Mensaje de WhatsApp (simulado)" onClick={e => { if (e.target === e.currentTarget) setMsg(null); }}>
+    <div className="os-theme overlay demo-wa" role="dialog" aria-modal="true" aria-label="Mensaje de WhatsApp (simulado)" onClick={e => { if (e.target === e.currentTarget) setMsg(null); }}>
       <div className="sheet stack">
         <div className="row-between"><h2 style={{ margin: 0 }}>Mensaje de WhatsApp</h2><button className="btn btn-ghost" onClick={() => setMsg(null)}>Cerrar</button></div>
         <p className="muted small">En la versión completa esto abre WhatsApp con el mensaje listo{msg.phone ? ` para ${msg.phone}` : ""}. En la muestra no se envía nada.</p>
