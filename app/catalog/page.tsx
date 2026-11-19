@@ -1,0 +1,387 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import { fmtRef, fmtVes, fmtRate } from "@/lib/format";
+import { OsIcon } from "@/components/os-icon";
+import {
+  catalogIsFresh, filterCatalog, formatCatalogDate, normalizeCatalogProduct,
+  normalizeCatalogSync, type CatalogFilters, type CatalogProduct, type CatalogSort,
+  type CatalogSync
+} from "@/lib/catalog";
+import { canAdministerOrders } from "@/lib/session-cache";
+import { toInventoryRow, type InventoryFullRow } from "@/lib/inventory-full";
+import {
+  InventoryItemSheet, type InventoryLocation, type InventoryRates
+} from "@/components/inventory-item-sheet";
+
+type EditTarget = {
+  row: InventoryFullRow;
+  categories: string[];
+  location: InventoryLocation | null;
+  rates: InventoryRates;
+};
+
+
+function Photo({ url, name, large = false }: { url: string | null; name: string; large?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [url]);
+  return <div className={"lc-catalog-photo" + (large ? " is-large" : "")}>
+    {url && !failed
+      ? <img src={url} alt={"Fotografía de " + name} loading={large ? "eager" : "lazy"}
+          decoding="async" onError={() => setFailed(true)} />
+      : <div className="lc-catalog-no-photo">
+          <OsIcon name="inventory" size={large ? 48 : 33}/>
+          <span>Sin fotografía</span>
+        </div>}
+  </div>;
+}
+
+function Price({ label, amount, currency, prominent = false }: {
+  label: string;
+  amount: number | null;
+  currency: "usd" | "bs";
+  prominent?: boolean;
+}) {
+  return <div className={"lc-catalog-price" + (prominent ? " is-prominent" : "")}>
+    <span>{label}</span>
+    <strong>{amount === null ? "Sin precio" : currency === "usd" ? fmtRef(amount) : fmtVes(amount)}</strong>
+  </div>;
+}
+
+function PriceSet({ item, compact = false }: { item: CatalogProduct; compact?: boolean }) {
+  return <div className={"lc-catalog-prices" + (compact ? " is-compact" : "")}>
+    <Price label="Divisas · USD" amount={item.cash_usd_base_price} currency="usd" prominent />
+    <Price label="Dólares BCV" amount={item.current_ref_bcv} currency="usd" />
+    <Price label="Bolívares" amount={item.current_price_ves} currency="bs" />
+  </div>;
+}
+
+function StockLine({ qty }: { qty: number }) {
+  return <span className={"lc-catalog-stock" + (qty > 0 ? "" : " is-out")}>{qty > 0 ? `Existencia: ${qty.toLocaleString("es-VE")}` : "Agotado"}</span>;
+}
+
+function ProductDetail({ item, onClose, onEdit }: { item: CatalogProduct; onClose: () => void; onEdit?: () => void }) {
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const [copyState, setCopyState] = useState<"idle" | "done" | "error">("idle");
+
+  useEffect(() => {
+    closeButton.current?.focus();
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  async function copyPrice() {
+    const text = [
+      item.name,
+      "Divisas: " + (item.cash_usd_base_price === null ? "No disponible" : fmtRef(item.cash_usd_base_price)),
+      "Dólares BCV: " + (item.current_ref_bcv === null ? "No disponible" : fmtRef(item.current_ref_bcv)),
+      "Bolívares: " + (item.current_price_ves === null ? "No disponible" : fmtVes(item.current_price_ves)),
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("done");
+    } catch {
+      setCopyState("error");
+    }
+  }
+
+  return <div className="lc-catalog-dialog-overlay" onMouseDown={event => {
+    if (event.target === event.currentTarget) onClose();
+  }}>
+    <section className="lc-catalog-dialog" role="dialog" aria-modal="true" aria-labelledby="lc-catalog-detail-title">
+      <button ref={closeButton} className="lc-catalog-dialog-close" onClick={onClose} aria-label="Cerrar detalle"><OsIcon name="close"/></button>
+      <Photo url={item.image_url} name={item.name} large/>
+      <div className="lc-catalog-dialog-content">
+        <div className="lc-catalog-kicker">Ficha de producto</div>
+        <h2 id="lc-catalog-detail-title">{item.name}</h2>
+        <span className="lc-catalog-category">{item.category || "Sin categoría"}</span>
+        <div className="lc-catalog-dialog-section">
+          <div className="lc-catalog-dialog-section-title">Precios actuales</div>
+          <PriceSet item={item}/>
+        </div>
+        <p className="lc-catalog-dialog-caption">Precio de venta del inventario. Los equivalentes en bolívares y dólares BCV se calculan con las tasas del sistema.</p>
+        <div className="lc-catalog-dialog-actions">
+          <button className="lc-catalog-button is-primary" onClick={() => void copyPrice()}>
+            <OsIcon name={copyState === "done" ? "check" : "receipt"} size={17}/>
+            {copyState === "done" ? "Precios copiados" : "Copiar precios"}
+          </button>
+          <Link className="lc-catalog-button" href={"/quote?add="+encodeURIComponent(item.id)}><OsIcon name="plus" size={16}/> Cotizar producto</Link>
+          {onEdit && <button className="lc-catalog-button" onClick={onEdit}>Editar artículo</button>}
+          <button className="lc-catalog-button" onClick={onClose}>Volver</button>
+        </div>
+        {copyState === "error" && <p className="lc-catalog-copy-error" role="alert">Tu navegador impidió copiar. Puedes seleccionar los precios de esta ficha.</p>}
+        <div className="lc-catalog-dialog-footer">Precio actualizado: {formatCatalogDate(item.catalog_synced_at)}</div>
+      </div>
+    </section>
+  </div>;
+}
+
+export default function CatalogPage() {
+  const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
+  const [stock, setStock] = useState<Record<string, number>>({});
+  const [stockOnly, setStockOnly] = useState(false);
+  const [sync, setSync] = useState<CatalogSync | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filters, setFilters] = useState<CatalogFilters>({
+    query: "", category: "TODAS", imagesOnly: false, sort: "name"
+  });
+  const [view, setView] = useState<"gallery" | "list">("gallery");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = catalog.find(product => product.id === selectedId);
+  const closeDetail = () => setSelectedId(null);
+  const [canManage, setCanManage] = useState(false);
+  const [editing, setEditing] = useState<EditTarget | null>(null);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    void canAdministerOrders().then(result => setCanManage(result.data === true));
+  }, []);
+
+  // Trae la ficha completa del inventario (la misma que usa Inventario) y abre la hoja de edición.
+  async function openEdit(id: string) {
+    if (openingId) return;
+    setOpeningId(id); setError(""); setNotice("");
+    try {
+      const [inv, rate, loc] = await Promise.all([
+        supabase.rpc("get_inventory_full", { p_location_code: "CENTRO" }),
+        supabase.rpc("get_current_rates"),
+        supabase.from("locations").select("id,code,name").eq("code", "CENTRO").maybeSingle(),
+      ]);
+      if (inv.error) throw inv.error;
+      if (loc.error) throw loc.error;
+      const rows = ((inv.data ?? []) as unknown[]).map(toInventoryRow);
+      const row = rows.find(r => r.id === id);
+      if (!row) throw new Error("No encontré este artículo en Inventario. Actualiza el catálogo e intenta de nuevo.");
+      const r = Array.isArray(rate.data) ? rate.data[0] : rate.data;
+      setSelectedId(null);
+      setEditing({
+        row,
+        categories: Array.from(new Set(rows.map(x => x.category).filter(Boolean) as string[])).sort(),
+        location: loc.data ?? null,
+        rates: { bcv: Number(r?.bcv_rate ?? 0), operative: Number(r?.operative_rate ?? 0) },
+      });
+    } catch (e: any) {
+      setError(e?.message ?? "No pude abrir el artículo para editarlo.");
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    const [products, current] = await Promise.all([
+      supabase.rpc("get_catalog_view", { p_location_code: "CENTRO" }),
+      supabase.rpc("get_pricing_sync_status"),
+    ]);
+    if (products.error || current.error) {
+      setError(products.error?.message || current.error?.message || "No fue posible cargar el catálogo.");
+      setLoading(false);
+      return;
+    }
+    const raw = (products.data || []) as Record<string, unknown>[];
+    const normalized: CatalogProduct[] = raw
+      .map(item => normalizeCatalogProduct({
+        ...item, available: true, active: true, cash_usd_base_price: item.price_usd,
+        catalog_source: "Inventario", catalog_synced_at: item.price_updated_at,
+      }))
+      .filter((item: CatalogProduct) => item.name && item.id);
+    setStock(Object.fromEntries(raw.map(item => [String(item.id), Number(item.quantity_on_hand ?? 0)])));
+    setCatalog(normalized);
+    const row = Array.isArray(current.data) ? current.data[0] : current.data;
+    setSync(normalizeCatalogSync(row ?? null));
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void load();
+    const refresh = () => void load();
+    window.addEventListener("lubricenter:pricing-updated", refresh);
+    return () => window.removeEventListener("lubricenter:pricing-updated", refresh);
+  }, []);
+
+  const categories = useMemo(() => Array.from(new Set(
+    catalog.map(item => item.category || "Sin categoría")
+  )).sort((a, b) => a.localeCompare(b, "es-VE")), [catalog]);
+
+  const filtered = useMemo(() => filterCatalog(catalog, filters).filter(item => !stockOnly || (stock[item.id] ?? 0) > 0), [catalog, filters, stockOnly, stock]);
+  const inStock = catalog.filter(item => (stock[item.id] ?? 0) > 0).length;
+  const withPhotos = catalog.filter(item => item.image_url).length;
+  const upToDate = catalogIsFresh(sync);
+  const updateFilter = <K extends keyof CatalogFilters>(name: K, value: CatalogFilters[K]) =>
+    setFilters(previous => ({ ...previous, [name]: value }));
+
+  return <main className="container lc-catalog">
+    <header className="lc-catalog-heading">
+      <div>
+        <div className="lc-catalog-kicker"><OsIcon name="inventory" size={15}/> Catálogo de venta</div>
+        <h1><span className="mesa-commerce-number" aria-hidden="true">03 /</span> Catálogo<span className="mesa-commerce-dot">.</span></h1>
+        <p>Los artículos que marcaste para el catálogo en Inventario, con sus precios de venta.</p>
+      </div>
+      <div className="lc-catalog-heading-actions">
+        <Link href="/inventory" className="lc-catalog-button">Editar en Inventario</Link>
+        <Link href="/quote" className="lc-catalog-button is-primary"><OsIcon name="receipt" size={17}/> Abrir cotizador</Link>
+        <button className="lc-catalog-button is-primary" onClick={() => void load()} disabled={loading}>
+          <OsIcon name="refresh" size={16}/>{loading ? "Cargando…" : "Actualizar catálogo"}
+        </button>
+      </div>
+    </header>
+
+    <section className="lc-catalog-summary" aria-label="Resumen del catálogo">
+      <div className="lc-catalog-summary-main">
+        <span className="lc-catalog-summary-icon"><OsIcon name="inventory" size={23}/></span>
+        <div><span>En el catálogo</span><strong>{loading && !catalog.length ? "—" : catalog.length}</strong></div>
+      </div>
+      <div><span>Con existencia</span><strong>{loading && !catalog.length ? "—" : inStock}</strong></div>
+      <div><span>Con fotografía</span><strong>{loading && !catalog.length ? "—" : withPhotos}</strong></div>
+      <div><span>Tasa BCV</span><strong>{sync?.bcv ? fmtRate(sync.bcv) : "—"}</strong></div>
+      <div><span>Tasa operativa</span><strong>{sync?.operative ? fmtRate(sync.operative) : "—"}</strong></div>
+    </section>
+
+    <div className={"lc-catalog-sync" + (upToDate ? " is-fresh" : " is-stale")} role="status">
+      <OsIcon name={upToDate ? "check" : "alert"} size={17}/>
+      <span><strong>{upToDate ? "Tasas al día" : "Verifica las tasas"}</strong>
+        <small>Precio de venta en divisas por artículo; Bs con la tasa operativa y REF con BCV</small></span>
+      {!upToDate && <Link href="/settings">Revisar tasas</Link>}
+    </div>
+
+    {notice && <div className="success" role="status">{notice}</div>}
+    {error && <div className="error" role="alert">
+      {error} <button className="lc-catalog-retry" onClick={() => void load()}>Intentar nuevamente</button>
+    </div>}
+
+    <section className="lc-catalog-toolbar" aria-label="Buscar y filtrar el catálogo">
+      <div className="lc-catalog-controls">
+        <label className="lc-catalog-search">
+          <OsIcon name="search" size={20}/>
+          <input type="search" placeholder="Buscar aceite, filtro, marca o código…"
+            value={filters.query} onChange={e => updateFilter("query", e.target.value)}
+            aria-label="Buscar productos por nombre o categoría"/>
+        </label>
+        <label className="lc-catalog-select">
+          <span>Categoría</span>
+          <select value={filters.category} onChange={e => updateFilter("category", e.target.value)}>
+            <option value="TODAS">Todas las categorías</option>
+            {categories.map(category => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </label>
+        <label className="lc-catalog-select">
+          <span>Ordenar</span>
+          <select value={filters.sort} onChange={e => updateFilter("sort", e.target.value as CatalogSort)}>
+            <option value="name">Nombre A–Z</option>
+            <option value="divisas-low">Divisas: menor a mayor</option>
+            <option value="divisas-high">Divisas: mayor a menor</option>
+            <option value="bcv-low">$ BCV: menor a mayor</option>
+            <option value="bcv-high">$ BCV: mayor a menor</option>
+          </select>
+        </label>
+      </div>
+      <div className="lc-catalog-toolbar-footer">
+        <label className="lc-catalog-toggle"><input type="checkbox" checked={filters.imagesOnly}
+          onChange={e => updateFilter("imagesOnly", e.target.checked)}/>
+          Solo con fotografías
+        </label>
+        <label className="lc-catalog-toggle"><input type="checkbox" checked={stockOnly}
+          onChange={e => setStockOnly(e.target.checked)}/>
+          Solo con existencia
+        </label>
+        <div className="lc-catalog-view-toggle" role="group" aria-label="Modo de visualización">
+          <button className={view === "gallery" ? "is-selected" : ""}
+            aria-pressed={view === "gallery"} onClick={() => setView("gallery")}>
+            <OsIcon name="layers" size={17}/> Galería
+          </button>
+          <button className={view === "list" ? "is-selected" : ""}
+            aria-pressed={view === "list"} onClick={() => setView("list")}>
+            <OsIcon name="list" size={17}/> Lista
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <div className="lc-catalog-count" aria-live="polite">
+      <span>{loading && !catalog.length ? "Cargando productos…" : filtered.length + " de " + catalog.length + " productos"}</span>
+      <small>Para agregar o quitar artículos, márcalos en Inventario.</small>
+    </div>
+
+    {loading && !catalog.length && <div className="lc-catalog-grid">
+      {Array.from({ length: 8 }, (_, i) => <div key={i} className="lc-catalog-skeleton"><span/><span/><span/><span/></div>)}
+    </div>}
+
+    {!loading && !error && !filtered.length && <div className="lc-catalog-empty">
+      <OsIcon name="search" size={34}/>
+      <strong>{catalog.length ? "No se encontraron productos" : "El catálogo está vacío"}</strong>
+      <p>{catalog.length ? "Prueba otra búsqueda o elimina alguno de los filtros." : "En Inventario, marca «Catálogo» en los artículos que quieras mostrar."}</p>
+      {catalog.length > 0 && <button className="lc-catalog-button" onClick={() => setFilters({ query: "", category: "TODAS", imagesOnly: false, sort: "name" })}>Limpiar filtros</button>}
+    </div>}
+
+    {filtered.length > 0 && view === "gallery" && <section className="lc-catalog-grid" aria-label="Productos en galería">
+      {filtered.map(item => <article className="lc-catalog-card" key={item.id}>
+        <button type="button" className="lc-catalog-card-detail" onClick={() => setSelectedId(item.id)}
+          aria-label={"Ver detalles de "+item.name}>
+          <Photo url={item.image_url} name={item.name}/>
+          <div className="lc-catalog-card-body">
+            <span className="lc-catalog-category">{item.category || "Sin categoría"}</span>
+            <h2>{item.name}</h2>
+            <PriceSet item={item}/>
+            <StockLine qty={stock[item.id] ?? 0}/>
+            <span className="lc-catalog-card-open">Ver detalles <OsIcon name="right" size={15}/></span>
+          </div>
+        </button>
+        <div className={"lc-catalog-card-actions" + (canManage ? " has-edit" : "")}>
+          {canManage && <button type="button" className="lc-catalog-edit-button" disabled={openingId !== null}
+            onClick={() => void openEdit(item.id)} aria-label={"Editar "+item.name}>
+            {openingId === item.id ? "Abriendo…" : "Editar"}
+          </button>}
+          <Link className="lc-catalog-quote-link" href={"/quote?add="+encodeURIComponent(item.id)}>
+            <OsIcon name="plus" size={16}/> Agregar a cotización
+          </Link>
+        </div>
+      </article>)}
+    </section>}
+
+    {filtered.length > 0 && view === "list" && <section className="lc-catalog-list" aria-label="Productos en lista">
+      <div className="lc-catalog-list-head"><span>Producto</span><span>Divisas</span><span>Dólares BCV</span><span>Bolívares</span><span>Acción</span></div>
+      {filtered.map(item => <div key={item.id} className="lc-catalog-list-entry">
+        <button type="button" className="lc-catalog-list-row" onClick={() => setSelectedId(item.id)}>
+          <span className="lc-catalog-list-name"><Photo url={item.image_url} name={item.name}/>
+            <span><strong>{item.name}</strong><small>{item.category || "Sin categoría"} · {(stock[item.id] ?? 0) > 0 ? `existencia ${(stock[item.id] ?? 0).toLocaleString("es-VE")}` : "agotado"}</small></span></span>
+          <span className="lc-catalog-list-price"><small>Divisas</small>{item.cash_usd_base_price === null ? "—" : fmtRef(item.cash_usd_base_price)}</span>
+          <span className="lc-catalog-list-price"><small>Dólares BCV</small>{item.current_ref_bcv === null ? "—" : fmtRef(item.current_ref_bcv)}</span>
+          <span className="lc-catalog-list-price"><small>Bolívares</small>{item.current_price_ves === null ? "—" : fmtVes(item.current_price_ves)}</span>
+        </button>
+        <div className="lc-catalog-list-actions">
+          <Link href={"/quote?add="+encodeURIComponent(item.id)} className="lc-catalog-list-quote">
+            <OsIcon name="plus" size={15}/> Cotizar
+          </Link>
+          {canManage && <button type="button" className="lc-catalog-edit-button is-list" disabled={openingId !== null}
+            onClick={() => void openEdit(item.id)} aria-label={"Editar "+item.name}>
+            {openingId === item.id ? "Abriendo…" : "Editar"}
+          </button>}
+        </div>
+      </div>)}
+    </section>}
+
+    <p className="lc-catalog-disclaimer">Al editar un artículo aquí cambias el mismo registro de Inventario (nombre, precio, foto, existencia y catálogo). Los cambios no modifican ventas históricas.</p>
+    {selected && <ProductDetail key={selected.id} item={selected} onClose={closeDetail}
+      onEdit={canManage ? () => void openEdit(selected.id) : undefined}/>}
+    {editing && <InventoryItemSheet key={editing.row.id} row={editing.row} categories={editing.categories}
+      location={editing.location} rates={editing.rates} onClose={() => setEditing(null)}
+      onSaved={async message => {
+        setEditing(null);
+        setNotice(message);
+        await load();
+      }}/>}
+  </main>;
+}

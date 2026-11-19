@@ -1,0 +1,525 @@
+"use client";
+import { inventorySearchText, matchesSearch, postgrestSearchText } from "@/lib/domain/search";
+import { isOilCandidate, isOilFilter, saleSource } from "@/lib/domain/oil-change";
+
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import { allowsManualSale, useInventorySalePolicy } from "@/lib/inventory-policy";
+import { fmtRef, fmtVes } from "@/lib/format";
+import { OrderExtrasChecklist } from "@/components/order-extras-checklist";
+import { EMPTY_ORDER_EXTRAS, normalizeOrderExtras, orderExtrasRpcParams,
+  validateOrderExtras, type OrderExtras } from "@/lib/order-extras";
+import { NumberInput } from "@/components/number-field";
+
+type Order = { id: string; order_number: string; status: string; customer_id: string | null; vehicle_id: string | null };
+type Vehicle = { id: string; customer_id: string | null; plate: string | null; make: string | null; model: string | null; year: number | null; current_odometer: number | null };
+type VehicleWithOwner = Vehicle & { owner: { name: string | null } | null };
+const VEHICLE_FIELDS = "id,customer_id,plate,make,model,year,current_odometer";
+type Customer = { id: string; name: string | null; phone: string | null };
+type Rates = { bcv: number; operative: number };
+type PricingSync = { catalogSyncedAt: string | null; bcvEffectiveAt: string | null; operativeEffectiveAt: string | null };
+type InventoryItem = {
+  id: string;
+  source: "INVENTORY" | "CATALOG" | "MANUAL";
+  sku: string;
+  brand: string | null;
+  description: string;
+  category: string | null;
+  quantity_on_hand: number;
+  product_id: string | null;
+  catalog_product_name: string | null;
+  current_price_ves: number | null;
+  current_ref_bcv: number | null;
+  needs_review: boolean;
+};
+
+function syncLabel(value: string | null) {
+  if (!value) return "sin sincronizar";
+  return new Date(value).toLocaleString("es-VE", {
+    timeZone: "America/Caracas",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function extractViscosity(value: string) {
+  return value.match(/\b\d{1,2}\s*W\s*[-/]?\s*\d{2}\b/i)?.[0]?.replace(/\s+/g, "").replace("/", "-") ?? "";
+}
+
+function manualItem(id: string, name: string, category: string): InventoryItem {
+  return { id, source: "MANUAL", sku: "MANUAL", brand: name.trim(), description: name.trim(), category,
+    quantity_on_hand: 0, product_id: null, catalog_product_name: null, current_price_ves: null,
+    current_ref_bcv: null, needs_review: false };
+}
+
+export default function OilChangePage() {
+  const manualAllowed = allowsManualSale(useInventorySalePolicy());
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const orderId = params.id;
+
+  const [order, setOrder] = useState<Order | null>(null);
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [vehicleOwners, setVehicleOwners] = useState<Record<string,string>>({});
+  const [vehicleSearch, setVehicleSearch] = useState("");
+  const [showOtherOwners, setShowOtherOwners] = useState(false);
+  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [rates, setRates] = useState<Rates>({ bcv: 0, operative: 0 });
+  const [sync, setSync] = useState<PricingSync>({ catalogSyncedAt: null, bcvEffectiveAt: null, operativeEffectiveAt: null });
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [extras, setExtras] = useState<OrderExtras>({...EMPTY_ORDER_EXTRAS});
+
+  const [description, setDescription] = useState("Cambio de aceite");
+  const [serviceBaseRef, setServiceBaseRef] = useState("0");
+  const [serviceCustomerRef, setServiceCustomerRef] = useState("0");
+  const [odometer, setOdometer] = useState("");
+
+  const [oilId, setOilId] = useState("");
+  const [oilSearch, setOilSearch] = useState("");
+  const [oilUnits, setOilUnits] = useState("1");
+  const [oilPriceRef, setOilPriceRef] = useState("");
+  const [manualOilName, setManualOilName] = useState("");
+  const [viscosity, setViscosity] = useState("");
+  const [liters, setLiters] = useState("");
+
+  const [filterId, setFilterId] = useState("");
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterUnits, setFilterUnits] = useState("1");
+  const [filterPriceRef, setFilterPriceRef] = useState("");
+  const [manualFilterName, setManualFilterName] = useState("");
+
+  // Quién trae qué: regla del 85%. Si el cliente compra aquí menos del 85% del cambio, se cobra mano de obra.
+  const [customerOil, setCustomerOil] = useState(false);
+  const [customerFilter, setCustomerFilter] = useState(false);
+  const [customerFilterName, setCustomerFilterName] = useState("");
+  const [filterRefValue, setFilterRefValue] = useState("5");
+  const [replaceIds, setReplaceIds] = useState<string[]>([]);
+  const [convertNotice, setConvertNotice] = useState("");
+  const [nextKm, setNextKm] = useState("5000");
+  const [nextMonths, setNextMonths] = useState("3");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+
+  const catalogAge = sync.catalogSyncedAt ? (Date.now() - new Date(sync.catalogSyncedAt).getTime()) / 3600000 : Infinity;
+  const rateTimes = [sync.bcvEffectiveAt, sync.operativeEffectiveAt].filter(Boolean) as string[];
+  const rateAge = rateTimes.length ? Math.max(...rateTimes.map(v => (Date.now() - new Date(v).getTime()) / 3600000)) : Infinity;
+  const pricingFresh = catalogAge <= 24 && rateAge <= 3;
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    setWarning("");
+    const [orderRes, ratesRes, invRes, syncRes] = await Promise.all([
+      supabase.from("orders").select("id,order_number,status,customer_id,vehicle_id,crm_additional_services,crm_bonuses,crm_observations").eq("id", orderId).single(),
+      supabase.rpc("get_order_rates",{p_order_id:orderId}),
+      supabase.from("inventory_current").select("id,sku,brand,description,category,quantity_on_hand,product_id,catalog_product_name,current_price_ves,current_ref_bcv,needs_review,alt_codes").eq("location_code", "CENTRO").order("sku").limit(1000),
+      supabase.rpc("get_pricing_sync_status"),
+    ]);
+
+    if (orderRes.error || ratesRes.error) {
+      setError((orderRes.error || ratesRes.error)?.message ?? "No pude cargar el cambio de aceite.");
+      setLoading(false);
+      return;
+    }
+    if (invRes.error || syncRes.error) setWarning("No cargó alguna fuente de precios o productos. Puedes registrar el aceite usado manualmente y continuar; revisa el precio antes de guardar.");
+
+    const ord = orderRes.data as Order;
+    if (ord.status !== "OPEN") {
+      setError("Esta orden ya no está abierta.");
+      setLoading(false);
+      return;
+    }
+    if (!ord.vehicle_id) {
+      setError("Asocia un vehículo antes de registrar el cambio de aceite.");
+      setLoading(false);
+      return;
+    }
+
+    setOrder(ord);
+    setExtras(normalizeOrderExtras(orderRes.data));
+    const rateRow = Array.isArray(ratesRes.data) ? ratesRes.data[0] : ratesRes.data;
+    setRates({ bcv: Number(rateRow?.bcv_rate ?? 0), operative: Number(rateRow?.operative_rate ?? 0) });
+
+    const syncRow = Array.isArray(syncRes.data) ? syncRes.data[0] : syncRes.data;
+    setSync({
+      catalogSyncedAt: syncRow?.catalog_synced_at ?? null,
+      bcvEffectiveAt: syncRow?.bcv_effective_at ?? null,
+      operativeEffectiveAt: syncRow?.operative_effective_at ?? null,
+    });
+
+    const stockItems = (invRes.data ?? []).map((x: any) => ({
+      ...x,
+      source: "INVENTORY" as const,
+      quantity_on_hand: Number(x.quantity_on_hand ?? 0),
+      current_price_ves: x.current_price_ves == null ? null : Number(x.current_price_ves),
+      current_ref_bcv: x.current_ref_bcv == null ? null : Number(x.current_ref_bcv),
+    }));
+    // El inventario es el único catálogo: no se ofrecen productos fuera de él.
+    setInventory(stockItems as InventoryItem[]);
+
+    // Viene de "¿Es un cambio de aceite?": usar el aceite y filtro que ya estaban en la orden.
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("convert") === "1") {
+      const cand = await supabase.rpc("order_oil_change_candidates", { p_order_id: orderId });
+      if (cand.error) setWarning("No pude leer el aceite y filtro de la orden: " + cand.error.message);
+      else {
+        const rows = (cand.data ?? []) as { order_item_id: string; kind: "OIL" | "FILTER"; description: string; quantity: number; unit_ref: number; inventory_item_id: string | null; product_id: string | null }[];
+        // Con el inventario como único catálogo, una línea vieja de la lista de precios se busca por su artículo enlazado.
+        const pick = (r: typeof rows[number]) => r.inventory_item_id && stockItems.some((x: InventoryItem) => x.id === r.inventory_item_id) ? r.inventory_item_id
+          : r.product_id ? stockItems.find((x: InventoryItem) => x.product_id === r.product_id && x.quantity_on_hand > 0)?.id ?? null : null;
+        const oilRow = rows.find(r => r.kind === "OIL");
+        const filterRow = rows.find(r => r.kind === "FILTER");
+        if (oilRow) {
+          const id = pick(oilRow);
+          if (id) setOilId(id); else { setOilId("manual:oil"); setManualOilName(oilRow.description); }
+          setOilUnits(String(Number(oilRow.quantity))); setOilPriceRef(Number(oilRow.unit_ref).toFixed(2));
+          setViscosity(extractViscosity(oilRow.description));
+        }
+        if (filterRow) {
+          const id = pick(filterRow);
+          if (id) setFilterId(id); else { setFilterId("manual:filter"); setManualFilterName(filterRow.description); }
+          setFilterUnits(String(Number(filterRow.quantity))); setFilterPriceRef(Number(filterRow.unit_ref).toFixed(2));
+        }
+        const ids = [oilRow, filterRow].filter(Boolean).map(r => r!.order_item_id);
+        setReplaceIds(ids);
+        if (ids.length) setConvertNotice("Tomamos el aceite y el filtro que ya estaban en la orden. Al guardar se convierten en el cambio de aceite (no se duplican).");
+      }
+    }
+
+    // Solo los vehículos del cliente de la orden; los de otros propietarios se
+    // buscan en el servidor al escribir (antes se bajaban todos los vehículos y
+    // todos los clientes en cada apertura, con corte silencioso en 1000).
+    const [vehicleRes, customerRes, ownVehiclesRes] = await Promise.all([
+      supabase.from("vehicles").select(`${VEHICLE_FIELDS},owner:customers(name)`).eq("id", ord.vehicle_id).single(),
+      ord.customer_id ? supabase.from("customers").select("id,name,phone").eq("id", ord.customer_id).maybeSingle() : Promise.resolve({ data: null, error: null } as any),
+      ord.customer_id
+        ? supabase.from("vehicles").select(`${VEHICLE_FIELDS},owner:customers(name)`).eq("customer_id", ord.customer_id).order("plate").limit(100)
+        : Promise.resolve({ data: [], error: null } as any),
+    ]);
+    if (ownVehiclesRes.error) setWarning("No se pudo cargar la lista de vehículos. Verifica el vehículo antes de continuar.");
+    mergeVehicles([...(ownVehiclesRes.data ?? []), ...(vehicleRes.data ? [vehicleRes.data] : [])] as unknown as VehicleWithOwner[]);
+
+    if (vehicleRes.error || customerRes.error) {
+      setError((vehicleRes.error || customerRes.error)?.message ?? "No pude cargar el vehículo.");
+      setLoading(false);
+      return;
+    }
+
+    const { owner: _owner, ...vr } = vehicleRes.data as unknown as VehicleWithOwner;
+    setVehicle(vr);
+    setCustomer((customerRes.data ?? null) as Customer | null);
+    if (vr.current_odometer != null) setOdometer(String(vr.current_odometer));
+    setLoading(false);
+  }
+
+  useEffect(() => { if (orderId) load(); }, [orderId]);
+
+  function mergeVehicles(rows: VehicleWithOwner[]) {
+    if (!rows.length) return;
+    setVehicles(current => {
+      const map = new Map(current.map(v => [v.id, v]));
+      for (const { owner: _o, ...v } of rows) map.set(v.id, v);
+      return [...map.values()];
+    });
+    setVehicleOwners(current => {
+      const next = { ...current };
+      for (const v of rows) if (v.customer_id) next[v.customer_id] = v.owner?.name || "Sin nombre";
+      return next;
+    });
+  }
+
+  // Búsqueda de vehículos de otros propietarios en el servidor (placa, marca,
+  // modelo o nombre del propietario), con espera corta mientras se escribe.
+  useEffect(() => {
+    const text = postgrestSearchText(vehicleSearch);
+    if (!showOtherOwners || text.length < 2) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      const pattern = `%${text}%`;
+      const [byVehicle, byOwner] = await Promise.all([
+        supabase.from("vehicles").select(`${VEHICLE_FIELDS},owner:customers(name)`)
+          .not("customer_id", "is", null)
+          .or(`plate.ilike.${pattern},make.ilike.${pattern},model.ilike.${pattern}`).order("plate").limit(50),
+        supabase.from("vehicles").select(`${VEHICLE_FIELDS},owner:customers!inner(name)`)
+          .ilike("owner.name", pattern).order("plate").limit(50),
+      ]);
+      if (!active) return;
+      if (byVehicle.error || byOwner.error) { setWarning("No se pudo buscar vehículos. Intenta de nuevo."); return; }
+      mergeVehicles([...(byVehicle.data ?? []), ...(byOwner.data ?? [])] as unknown as VehicleWithOwner[]);
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [vehicleSearch, showOtherOwners]);
+
+  const visibleVehicles=useMemo(()=>vehicles.filter(v=>{
+    if (!v.customer_id) return false;
+    if (!showOtherOwners && v.customer_id!==order?.customer_id) return false;
+    const haystack=[v.plate,v.make,v.model,v.year,vehicleOwners[v.customer_id]].join(" ").toLocaleLowerCase("es-VE");
+    return haystack.includes(vehicleSearch.trim().toLocaleLowerCase("es-VE"));
+  }).slice(0,150),[vehicles,order?.customer_id,showOtherOwners,vehicleSearch,vehicleOwners]);
+  const oils = useMemo(() => inventory.filter(i => isOilCandidate(i) && !i.needs_review), [inventory]);
+  const filters = useMemo(() => inventory.filter(i => isOilFilter(i) && !i.needs_review), [inventory]);
+  const availableCatalogIds = useMemo(() => new Set(inventory.filter(i => i.source === "CATALOG").map(i => i.product_id).filter((id): id is string => !!id)), [inventory]);
+
+  const visibleOils = useMemo(() => {
+    const q = oilSearch.trim().toLowerCase();
+    return q ? inventory.filter(i => !i.needs_review && !isOilFilter(i) && matchesSearch(inventorySearchText(i), q)) : oils;
+  }, [inventory, oils, oilSearch]);
+
+  const visibleFilters = useMemo(() => {
+    const q = filterSearch.trim().toLowerCase();
+    return q ? filters.filter(i => matchesSearch(inventorySearchText(i), q)) : filters;
+  }, [filters, filterSearch]);
+
+  // Si lo que se escribe a mano ya existe en inventario con existencia, avisar para no venderlo sin descontar.
+  const inStockMatches = (text: string, pool: InventoryItem[]) => {
+    const q = text.trim();
+    if (q.length < 3) return [];
+    return pool.filter(i => i.source === "INVENTORY" && i.quantity_on_hand > 0 && matchesSearch(inventorySearchText(i), q)).slice(0, 3);
+  };
+  const manualOilMatches = oilId === "manual:oil" ? inStockMatches(manualOilName, oils) : [];
+  const manualFilterMatches = filterId === "manual:filter" ? inStockMatches(manualFilterName, filters) : [];
+  const oil = oilId === "manual:oil" ? manualItem(oilId, manualOilName, "Aceite manual") : inventory.find(i => i.id === oilId) ?? null;
+  const filter = filterId === "manual:filter" ? manualItem(filterId, manualFilterName, "Filtro manual") : inventory.find(i => i.id === filterId) ?? null;
+  const oilSaleSource = oil ? saleSource(oil, Number(oilUnits), availableCatalogIds, manualAllowed) : null;
+  const filterSaleSource = filter ? saleSource(filter, Number(filterUnits), availableCatalogIds, manualAllowed) : "NONE";
+  const oilUnitRef = Number(oilPriceRef || 0);
+  const filterUnitRef = filter ? Number(filterPriceRef || 0) : 0;
+  const productRef = (customerOil ? 0 : oilUnitRef * Number(oilUnits || 0)) + (customerFilter ? 0 : filterUnitRef * Number(filterUnits || 0));
+  const totalPreviewRef = productRef + Number(serviceCustomerRef || 0);
+  const nextOdometer = odometer && nextKm ? Number(odometer) + Number(nextKm) : null;
+  const boughtRef = (customerOil ? 0 : oilUnitRef * Number(oilUnits || 0)) + (customerFilter ? 0 : filterUnitRef * Number(filterUnits || 0));
+  const broughtRef = customerFilter && !customerOil ? Number(filterRefValue || 0) : 0;
+  const boughtShare = customerOil ? 0 : boughtRef + broughtRef > 0 ? boughtRef / (boughtRef + broughtRef) : 1;
+  const laborRequired = customerOil || boughtShare < 0.85;
+
+  function chooseOil(id: string) {
+    setOilId(id);
+    const selected = id === "manual:oil" ? manualItem(id, manualOilName || oilSearch, "Aceite manual") : inventory.find(i => i.id === id);
+    setOilPriceRef(selected?.current_ref_bcv != null && pricingFresh ? selected.current_ref_bcv.toFixed(2) : "");
+    if (selected) setViscosity(extractViscosity(`${selected.description} ${selected.catalog_product_name ?? ""}`));
+  }
+
+  function chooseFilter(id: string) {
+    setFilterId(id);
+    const selected = id === "manual:filter" ? manualItem(id, manualFilterName || filterSearch, "Filtro manual") : inventory.find(i => i.id === id);
+    setFilterPriceRef(selected?.current_ref_bcv != null && pricingFresh ? selected.current_ref_bcv.toFixed(2) : "");
+  }
+
+  async function save() {
+    if (busy || !order || !vehicle) return;
+    if (!odometer || !Number.isInteger(Number(odometer)) || Number(odometer) < 0) return setError("Ingresa un kilometraje entero igual o mayor que cero.");
+    if (liters && (!Number.isFinite(Number(liters)) || Number(liters) <= 0)) return setError("Los litros deben ser mayores que cero, o deja el campo vacío.");
+    if ([serviceBaseRef, serviceCustomerRef, nextKm, nextMonths].some(v => !Number.isFinite(Number(v)) || Number(v) < 0)) return setError("Revisa mano de obra e intervalos: deben ser números iguales o mayores que cero.");
+    if (!Number.isInteger(Number(nextKm)) || !Number.isInteger(Number(nextMonths))) return setError("Los intervalos de kilómetros y meses deben ser enteros.");
+    if (customerOil && !manualOilName.trim()) return setError("Escribe qué aceite trajo el cliente (marca y viscosidad).");
+    if (laborRequired && !(Number(serviceCustomerRef) > 0)) return setError(customerOil ? "El cliente trae el aceite: escribe el precio de la mano de obra." : "El cliente compra aquí menos del 85% del cambio: escribe el precio de la mano de obra.");
+    if (!customerOil && !oil) return setError("Selecciona el aceite utilizado.");
+    if (!customerOil && oil?.source === "MANUAL" && !manualOilName.trim()) return setError("Escribe el nombre exacto del aceite utilizado.");
+    if (Number(nextKm) <= 0 && Number(nextMonths) <= 0) return setError("Indica el próximo mantenimiento en kilómetros o meses.");
+    if (!customerOil && (!Number.isFinite(Number(oilUnits)) || Number(oilUnits) <= 0)) return setError("La cantidad de aceite debe ser mayor que cero.");
+    if (!customerOil && (!Number.isFinite(oilUnitRef) || oilUnitRef <= 0)) return setError("Indica el precio REF a cobrar por el aceite.");
+    if (!customerFilter && filter && (!Number.isFinite(Number(filterUnits)) || Number(filterUnits) <= 0)) return setError("La cantidad de filtros debe ser mayor que cero.");
+    if (!customerFilter && filter?.source === "MANUAL" && !manualFilterName.trim()) return setError("Escribe el nombre del filtro utilizado.");
+    if (!customerFilter && filter && (!Number.isFinite(filterUnitRef) || filterUnitRef <= 0)) return setError("Indica el precio REF a cobrar por el filtro.");
+    const extrasValidation=validateOrderExtras(extras);
+    if(extrasValidation)return setError(extrasValidation);
+
+    setBusy(true);
+    setError("");
+    // Guardar primero las selecciones en el CRM existente evita crear un paquete duplicado
+    // cuando el guardado de las cortesías falla.
+    const { error: extrasError } = await supabase.rpc(
+      "set_order_crm_extras", orderExtrasRpcParams(order.id,extras)
+    );
+    if (extrasError) {
+      setBusy(false);
+      setError("No pudimos guardar los servicios y notas: "+extrasError.message+
+        ". El cambio de aceite todavía no se agregó.");
+      return;
+    }
+    const useFilter = !customerFilter && !!filter;
+    const { error } = await supabase.rpc("add_oil_change_service", {
+      p_order_id: order.id,
+      p_service_vehicle_id: vehicle.id,
+      p_odometer: Number(odometer),
+      p_replace_item_ids: replaceIds,
+      p_labor_ref: Number(serviceCustomerRef || 0),
+      p_oil_source: customerOil ? "CUSTOMER" : oilSaleSource,
+      p_oil_inventory_item_id: !customerOil && oilSaleSource === "INVENTORY" ? oil?.id : null,
+      p_oil_product_id: !customerOil && oilSaleSource === "CATALOG" ? oil?.product_id : null,
+      p_oil_description: customerOil ? manualOilName.trim() : oil?.source === "INVENTORY" && oilSaleSource === "MANUAL" ? `${oil.sku} · ${oil.description}` : oil?.description ?? null,
+      p_oil_units: customerOil ? 1 : Number(oilUnits),
+      p_oil_unit_ref: customerOil ? null : oilUnitRef,
+      p_oil_brand: customerOil ? manualOilName.trim() : oil?.brand?.trim() || oil?.description || null,
+      p_oil_viscosity: viscosity.trim() || null,
+      p_oil_quantity_liters: liters ? Number(liters) : null,
+      p_filter_source: useFilter ? filterSaleSource : "NONE",
+      p_filter_inventory_item_id: useFilter && filterSaleSource === "INVENTORY" ? filter?.id : null,
+      p_filter_product_id: useFilter && filterSaleSource === "CATALOG" ? filter?.product_id : null,
+      p_filter_description: useFilter ? (filter?.source === "INVENTORY" && filterSaleSource === "MANUAL" ? `${filter.sku} · ${filter.description}` : filter?.description ?? null) : null,
+      p_filter_units: useFilter ? Number(filterUnits) : 1,
+      p_filter_unit_ref: useFilter ? filterUnitRef : null,
+      p_filter_code: customerFilter ? (customerFilterName.trim() ? `${customerFilterName.trim()} (traído por el cliente)` : "Traído por el cliente") : filter?.source === "MANUAL" ? filter.description : filter?.sku ?? null,
+      p_next_km_interval: nextKm ? Number(nextKm) : 0,
+      p_next_months: nextMonths ? Number(nextMonths) : 0,
+      p_description: description.trim() || "Cambio de aceite",
+    });
+    setBusy(false);
+    if (error) return setError("Servicios y notas guardados, pero el cambio de aceite no se agregó: "+
+      error.message+". Corrige y vuelve a intentarlo una sola vez.");
+    router.push(`/orders/${order.id}`);
+    router.refresh();
+  }
+
+  return <main className="container stack">
+    <section className="brand-hero">
+      <div><div className="eyebrow">SERVICIO · ACEITE · INVENTARIO</div><h1>Cambio de aceite</h1><p>{order?.order_number ?? "Orden"} · {customer?.name || customer?.phone || "Cliente"} · {vehicle?.plate || `${vehicle?.make ?? ""} ${vehicle?.model ?? ""}`.trim()}</p></div>
+      <img src="/lubricenter-logo.png" alt="Lubricenter" />
+    </section>
+
+    {error && <div className="error">{error}</div>}
+    {warning && <div className="card brand-card">{warning}</div>}
+
+    <section className={`card ${pricingFresh ? "success" : "brand-card"}`}>
+      <div className="row-between">
+        <div><strong>Precio sugerido del catálogo</strong><div className="small">Catálogo {syncLabel(sync.catalogSyncedAt)} · tasas {syncLabel(sync.operativeEffectiveAt)}</div></div>
+        <span className={`pill ${pricingFresh ? "ok" : "warn"}`}>{pricingFresh ? "VIGENTE" : "PRECIO MANUAL"}</span>
+      </div>
+      <div className="muted small">Puedes modificar el precio a cobrar en esta orden. Eso no cambia el precio maestro del catálogo.</div>
+    </section>
+
+    <section className="card stack">
+      <h2 className="section-title">Vehículo al que corresponde este cambio</h2>
+      <p className="muted small">Puedes registrar dos o más cambios para carros diferentes dentro de una sola orden y cobrar una sola vez con Cashea. Cada vehículo tendrá su historial y CRM individual.</p>
+      <label className="row"><input type="checkbox" checked={showOtherOwners} onChange={e=>setShowOtherOwners(e.target.checked)}/>Buscar vehículos de otros clientes pagados por esta persona</label>
+      <label><span className="label">Buscar por placa, marca, modelo o propietario</span>
+        <input className="input" value={vehicleSearch} onChange={e=>setVehicleSearch(e.target.value)} placeholder="Placa o nombre del propietario" /></label>
+      <label><span className="label">Vehículo de este servicio *</span>
+        <select className="select" value={vehicle?.id||""} onChange={e=>{
+          const v=vehicles.find(x=>x.id===e.target.value);
+          if(!v)return;
+          setVehicle(v);setOdometer(v.current_odometer!=null?String(v.current_odometer):"");
+        }}>
+          {vehicle && !visibleVehicles.some(v=>v.id===vehicle.id)&&
+            <option value={vehicle.id}>{vehicle.plate||"Sin placa"} · {vehicle.make} {vehicle.model}</option>}
+          {visibleVehicles.map(v=><option key={v.id} value={v.id}>
+            {v.plate||"Sin placa"} · {v.make} {v.model} · {vehicleOwners[v.customer_id||""]||"Propietario"}
+          </option>)}
+        </select>
+      </label>
+      {vehicle && vehicle.customer_id!==order?.customer_id&&<div className="card brand-card">
+        Esta orden la paga {customer?.name||"el cliente de caja"}, pero el CRM del servicio se enviará al propietario del vehículo: {vehicleOwners[vehicle.customer_id||""]||"sin identificar"}. Verifica que sea la persona correcta.
+      </div>}
+      <div className="row-between">
+        <div><div className="muted small">VEHÍCULO SELECCIONADO</div><strong>{vehicle ? [vehicle.plate, vehicle.make, vehicle.model, vehicle.year].filter(Boolean).join(" · ") : "Cargando…"}</strong></div>
+        <button className="btn btn-ghost" onClick={() => router.push(`/orders/${orderId}`)}>Volver a orden</button>
+      </div>
+      <label><span className="label">Kilometraje actual *</span><NumberInput className="input" kind="qty" min="0" value={odometer} onChange={e => setOdometer(e.target.value)} placeholder="Ej. 84500" /></label>
+    </section>
+
+    {convertNotice && <div className="success" role="status">{convertNotice}</div>}
+    <section className="card stack">
+      <h2 className="section-title">¿Quién pone el aceite y el filtro?</h2>
+      <div className="grid grid-2">
+        <button type="button" className={`btn ${customerOil ? "" : "btn-primary"}`} style={{ minHeight: 52 }} aria-pressed={!customerOil} onClick={() => setCustomerOil(false)}>Aceite de Lubricenter</button>
+        <button type="button" className={`btn ${customerOil ? "btn-primary" : ""}`} style={{ minHeight: 52 }} aria-pressed={customerOil} onClick={() => setCustomerOil(true)}>El cliente trae el aceite</button>
+        <button type="button" className={`btn ${customerFilter ? "" : "btn-primary"}`} style={{ minHeight: 52 }} aria-pressed={!customerFilter} onClick={() => setCustomerFilter(false)}>Filtro de Lubricenter</button>
+        <button type="button" className={`btn ${customerFilter ? "btn-primary" : ""}`} style={{ minHeight: 52 }} aria-pressed={customerFilter} onClick={() => setCustomerFilter(true)}>El cliente trae el filtro</button>
+      </div>
+      {customerOil && <label><span className="label">¿Qué aceite trajo? (marca y viscosidad) *</span><input className="input" value={manualOilName} onChange={e => { setManualOilName(e.target.value); setViscosity(extractViscosity(e.target.value)); }} placeholder="Ej. Shell Helix 10W40" /></label>}
+      {customerFilter && <div className="grid grid-2">
+        <label><span className="label">¿Qué filtro trajo?</span><input className="input" value={customerFilterName} onChange={e => setCustomerFilterName(e.target.value)} placeholder="Código o marca" /></label>
+        {!customerOil && <label><span className="label">Valor de ese filtro ($ BCV)</span><input className="input" inputMode="decimal" value={filterRefValue} onChange={e => setFilterRefValue(e.target.value)} /></label>}
+      </div>}
+      <div className={laborRequired ? "card brand-card" : "success"}>
+        {customerOil
+          ? <strong>El cliente trae el aceite: se cobra la mano de obra (100% Lubricenter).</strong>
+          : laborRequired
+            ? <strong>Compra aquí el {Math.round(boughtShare * 100)}% del cambio (menos de 85%): se cobra la mano de obra.</strong>
+            : <strong>Compra aquí {customerFilter ? `el ${Math.round(boughtShare * 100)}%` : "todo"} el cambio: la mano de obra es gratis.</strong>}
+      </div>
+    </section>
+
+    {!customerOil && <section className="card stack">
+      <div className="row-between"><div><h2 className="section-title">1. Aceite</h2><div className="muted small">{loading ? "Cargando…" : `${oils.length} opciones · inventario y catálogo`}</div></div><button className="btn btn-ghost" onClick={load} disabled={loading}>Recargar</button></div>
+      {!loading && oils.length === 0 && <div className="card">No hay aceites clasificados. Busca por nombre en todo el catálogo o registra el aceite manualmente aquí.</div>}
+      <input className="input" value={oilSearch} onChange={e => setOilSearch(e.target.value)} placeholder="Buscar aceite por marca, viscosidad, nombre o SKU…" />
+      <div className="stack directory-list">{visibleOils.slice(0, 8).map(i => <button className={`directory-option ${oilId === i.id ? "selected" : ""}`} key={i.id} onClick={() => chooseOil(i.id)}><strong>{i.brand} · {i.sku}</strong><span>{i.description} · {i.source === "INVENTORY" ? `stock registrado ${i.quantity_on_hand}` : "Catálogo · no descuenta stock"}</span></button>)}</div>
+      <div className="muted small">{visibleOils.length > 8 ? "Mostrando 8 coincidencias. Escribe marca o viscosidad para afinar." : !visibleOils.length ? "No aparece. Puedes escribir el aceite usado abajo y continuar." : "Selecciona el aceite y confirma cantidad y precio abajo."}</div>
+      {manualAllowed && <button type="button" className="btn btn-ghost" onClick={() => { setManualOilName(oilSearch.trim()); setOilId("manual:oil"); setOilPriceRef(""); setViscosity(extractViscosity(oilSearch)); }}>+ Aceite nuevo o no sincronizado</button>}
+      {oilId === "manual:oil" && <label><span className="label">Nombre exacto del aceite usado *</span><input className="input" value={manualOilName} onChange={e => setManualOilName(e.target.value)} placeholder="Ej. FANFARO 15W40 semisintético" autoFocus /></label>}
+      {manualOilMatches.length > 0 && <div className="card brand-card stack"><strong>Este producto está en inventario.</strong><div className="small">Selecciónalo para que se descuente al cobrar:</div>{manualOilMatches.map(i => <button type="button" key={i.id} className="btn btn-ghost" onClick={() => chooseOil(i.id)}>{i.sku} · {i.catalog_product_name || i.description} · disponible {i.quantity_on_hand}</button>)}</div>}
+      {oil && <div className="success stack">
+        <div className="row-between"><div><strong>{oil.sku} · {oil.brand}</strong><div className="small">{oil.catalog_product_name || oil.description} · {oil.source === "INVENTORY" ? `disponible ${oil.quantity_on_hand}` : "se venderá sin descontar inventario"}</div></div><div style={{ textAlign: "right" }}>{oil.current_ref_bcv != null ? <><strong>{fmtRef(oil.current_ref_bcv)}</strong><div className="small">{fmtVes(oil.current_price_ves ?? 0)} sugerido</div></> : <strong>Sin precio sugerido</strong>}</div></div>
+      </div>}
+      {oil?.source === "INVENTORY" && oilSaleSource === "INVENTORY" && Number(oilUnits) > oil.quantity_on_hand && <div className="error">La cantidad supera el stock registrado ({oil.quantity_on_hand}). Corrige la cantidad o pide a un administrador que ajuste el inventario.</div>}
+      {oil?.source === "INVENTORY" && oilSaleSource !== "INVENTORY" && <div className="card brand-card">La cantidad supera el stock registrado. Se añadirá el aceite real a esta orden sin descontar inventario ni crear existencia ficticia.</div>}
+
+      <div className="grid grid-2">
+        <label><span className="label">Unidades usadas *</span><NumberInput className="input" kind="qty" min="0.01" step="0.01" value={oilUnits} onChange={e => setOilUnits(e.target.value)} /></label>
+        <label><span className="label">Precio a cobrar REF *</span><NumberInput className="input" kind="money" min="0.01" step="0.01" value={oilPriceRef} onChange={e => setOilPriceRef(e.target.value)} placeholder={pricingFresh ? "Precio sugerido del catálogo" : "Ingresa precio manual"} /></label>
+        <label><span className="label">Litros reales en el motor</span><NumberInput className="input" kind="qty" min="0" step="0.1" value={liters} onChange={e => setLiters(e.target.value)} placeholder="Ej. 4.5" /></label>
+        <label><span className="label">Viscosidad</span><input className="input" value={viscosity} onChange={e => setViscosity(e.target.value)} placeholder="Ej. 15W-40" /></label>
+      </div>
+    </section>}
+
+    {customerOil && <section className="card stack"><div className="grid grid-2">
+      <label><span className="label">Litros reales en el motor</span><NumberInput className="input" kind="qty" min="0" step="0.1" value={liters} onChange={e => setLiters(e.target.value)} placeholder="Ej. 4.5" /></label>
+      <label><span className="label">Viscosidad</span><input className="input" value={viscosity} onChange={e => setViscosity(e.target.value)} placeholder="Ej. 15W-40" /></label>
+    </div></section>}
+
+    {!customerFilter && <section className="card stack">
+      <div><h2 className="section-title">2. Filtro de aceite</h2><div className="muted small">Opcional · {filters.length} opciones de inventario y catálogo.</div></div>
+      <input className="input" value={filterSearch} onChange={e => setFilterSearch(e.target.value)} placeholder="Buscar código, marca o nombre del filtro…" />
+      <button className="btn btn-ghost" onClick={() => chooseFilter("")}>Sin filtro / cliente trae filtro</button>
+      <div className="stack directory-list">{visibleFilters.slice(0, 8).map(i => <button className={`directory-option ${filterId === i.id ? "selected" : ""}`} key={i.id} onClick={() => chooseFilter(i.id)}><strong>{i.brand} · {i.sku}</strong><span>{i.description} · {i.source === "INVENTORY" ? `stock registrado ${i.quantity_on_hand}` : "Catálogo · no descuenta stock"}</span></button>)}</div>
+      {manualAllowed && <button type="button" className="btn btn-ghost" onClick={() => { setManualFilterName(filterSearch.trim()); setFilterId("manual:filter"); setFilterPriceRef(""); }}>+ Filtro nuevo o no sincronizado</button>}
+      {filterId === "manual:filter" && <label><span className="label">Nombre o código exacto del filtro *</span><input className="input" value={manualFilterName} onChange={e => setManualFilterName(e.target.value)} placeholder="Ej. Filtro W 712/52" autoFocus /></label>}
+      {manualFilterMatches.length > 0 && <div className="card brand-card stack"><strong>Este producto está en inventario.</strong><div className="small">Selecciónalo para que se descuente al cobrar:</div>{manualFilterMatches.map(i => <button type="button" key={i.id} className="btn btn-ghost" onClick={() => chooseFilter(i.id)}>{i.sku} · {i.catalog_product_name || i.description} · disponible {i.quantity_on_hand}</button>)}</div>}
+
+      {filter && <div className="success stack">
+        <div className="row-between"><div><strong>{filter.sku} · {filter.brand}</strong><div className="small">{filter.description} · {filter.source === "INVENTORY" ? `disponible ${filter.quantity_on_hand}` : "se venderá sin descontar inventario"}</div></div><div style={{ textAlign: "right" }}>{filter.current_ref_bcv != null ? <><strong>{fmtRef(filter.current_ref_bcv)}</strong><div className="small">{fmtVes(filter.current_price_ves ?? 0)} sugerido</div></> : <strong>Sin precio sugerido</strong>}</div></div>
+      </div>}
+      {filter?.source === "INVENTORY" && filterSaleSource === "INVENTORY" && Number(filterUnits) > filter.quantity_on_hand && <div className="error">La cantidad supera el stock registrado ({filter.quantity_on_hand}). Corrige la cantidad o pide a un administrador que ajuste el inventario.</div>}
+      {filter?.source === "INVENTORY" && filterSaleSource !== "INVENTORY" && <div className="card brand-card">La cantidad supera el stock registrado. El filtro quedará en la orden sin descontar inventario.</div>}
+
+      {filter && <div className="grid grid-2">
+        <label><span className="label">Cantidad</span><NumberInput className="input" kind="qty" min="0.01" step="0.01" value={filterUnits} onChange={e => setFilterUnits(e.target.value)} /></label>
+        <label><span className="label">Precio a cobrar REF *</span><NumberInput className="input" kind="money" min="0.01" step="0.01" value={filterPriceRef} onChange={e => setFilterPriceRef(e.target.value)} placeholder={pricingFresh ? "Precio sugerido del catálogo" : "Ingresa precio manual"} /></label>
+      </div>}
+    </section>}
+
+    <section className="card stack">
+      <h2 className="section-title">3. Servicio y próximo mantenimiento</h2>
+      <label><span className="label">Descripción</span><input className="input" value={description} onChange={e => setDescription(e.target.value)} /></label>
+      <div className="grid grid-2">
+        <label><span className="label">Mano de obra REF{laborRequired ? " *" : " (gratis)"}</span><NumberInput className="input" kind="money" min="0" step="0.01" value={serviceCustomerRef} onChange={e => { setServiceCustomerRef(e.target.value); setServiceBaseRef(e.target.value); }} placeholder={laborRequired ? "Precio de la mano de obra" : "0"} /><span className="muted small">{laborRequired ? "Es 100% de Lubricenter; no lleva comisión." : "Gratis porque compra aquí al menos el 85% del cambio."}</span></label>
+        <label><span className="label">Próximo cambio · km</span><NumberInput className="input" kind="qty" min="0" step="500" value={nextKm} onChange={e => setNextKm(e.target.value)} /></label>
+        <label><span className="label">Próximo cambio · meses</span><NumberInput className="input" kind="qty" min="0" step="1" value={nextMonths} onChange={e => setNextMonths(e.target.value)} /></label>
+      </div>
+      {nextOdometer != null && <div className="muted small">Próximo kilometraje estimado: {nextOdometer.toLocaleString("es-VE")} km</div>}
+    </section>
+
+    <section className="card stack oce-oil-step">
+      <div>
+        <h2 className="section-title">4. Servicios adicionales y notas</h2>
+        <p className="muted small">Marca los servicios realizados y las cortesías. Todo se guarda junto con la orden y aparecerá en el mensaje post-servicio.</p>
+      </div>
+      <OrderExtrasChecklist value={extras} onChange={setExtras} disabled={busy||loading}/>
+    </section>
+
+    <section className="card stack">
+      <div className="row-between"><div><div className="muted small">TOTAL PREVIO</div><div className="money-lg">{fmtRef(totalPreviewRef)}</div></div><div style={{ textAlign: "right" }}><div className="muted small">Aprox. Bs</div><strong>{fmtVes(totalPreviewRef * rates.bcv)}</strong></div></div>
+      <div className="muted small">{customerOil ? "Aceite del cliente" : `Aceite ${fmtRef(oilUnitRef * Number(oilUnits || 0))}`}{filter && !customerFilter ? ` · Filtro ${fmtRef(filterUnitRef * Number(filterUnits || 0))}` : customerFilter ? " · Filtro del cliente" : ""} · Mano de obra {fmtRef(Number(serviceCustomerRef || 0))}</div>
+      {error && <div className="error" role="alert">{error}</div>}
+      {!customerOil && oil && !oilPriceRef && <div className="error">Confirma el precio REF del aceite arriba. El precio no está actualizado o requiere ingreso manual.</div>}
+      <button className="btn btn-primary btn-block" disabled={busy || loading || (!oil && !customerOil)} onClick={save}>{busy ? "Agregando…" : "Agregar cambio de aceite a la orden"}</button>
+    </section>
+  </main>;
+}
+

@@ -1,0 +1,444 @@
+"use client";
+import { TenderFields, type CashRoundDirection, type TenderDraft } from "@/components/tender-fields";
+import { OrderChangePanel } from "@/components/order-change-panel";
+import { OrderDateEditor } from "@/components/order-date-editor";
+import { inventorySearchText, matchesSearch } from "@/lib/domain/search";
+
+import { useEffect, useMemo, useState, useRef } from "react";
+import Link from "next/link";
+import { OrderCasheaSheet } from "@/components/order-cashea-sheet";
+import { OrderAdjustments, type AdjustmentState } from "@/components/checkout-adjustments";
+import { PassThroughSheet } from "@/components/pass-through-sheet";
+import { AttendantPicker, stampAttendant } from "@/components/attendant-picker";
+import type { RoundingMode } from "@/lib/domain/economics";
+import { OrderPartySheet } from "@/components/order-party-sheet";
+import { OrderBonusProduct } from "@/components/order-bonus-product";
+import { OrderAdditionalServices } from "@/components/order-additional-services";
+import { useRouter } from "next/navigation";
+import { referenceError } from "@/lib/finance/money";
+import { supabase } from "@/lib/supabase";
+import { canAdministerOrders } from "@/lib/session-cache";
+import { allowsManualSale, useInventorySalePolicy } from "@/lib/inventory-policy";
+import { fmtRef, fmtVes } from "@/lib/format";
+import { electroautoAllocation, workshopAllocation } from "@/lib/domain/allocations";
+import { NumberInput } from "@/components/number-field";
+import { LoadingBlock } from "@/components/skeleton";
+import { OrderNotes } from "@/components/order-notes";
+import { CheckoutError } from "@/components/checkout-error";
+import { laborRuleNotice } from "@/lib/payroll-registered-rule";
+
+type InventoryProduct = {
+  id: string;
+  sku: string;
+  brand: string | null;
+  description: string;
+  category: string | null;
+  quantity_on_hand: number;
+  product_id: string | null;
+  catalog_product_name: string | null;
+  current_price_ves: number | null;
+  current_ref_bcv: number | null;
+  needs_review: boolean;
+  alt_codes?: string[] | null;
+};
+
+type CatalogProduct = {
+  id: string;
+  name: string;
+  category: string | null;
+  filter_code: string | null;
+  available: boolean;
+  cash_usd_base_price: number;
+  current_price_ves: number | null;
+  current_ref_bcv: number | null;
+};
+
+type Customer = { id: string; name: string | null; phone: string | null; document_id: string | null };
+type Vehicle = { id: string; customer_id: string | null; plate: string | null; make: string | null; model: string | null; year: number | null; engine: string | null; current_odometer: number | null };
+type OrderRecord = { id: string; order_number: string; status: "OPEN" | "CLOSED" | "CANCELLED"; customer_id: string | null; vehicle_id: string | null; is_walk_in: boolean; opened_at: string; closed_at: string | null; total_ves: number; total_ref: number; adjust_discount_percent?: number; adjust_discount_reason?: string | null; adjust_rounding_mode?: string; adjust_cash_rounding_ref?: number };
+type Item = { line_role?: string | null; list_ref_amount?: number | null; pass_through_cost_ref?: number | null; price_denomination:string;agreed_usd:number|null; id: string; item_type: string; business_area: string; description: string; quantity: number; charged_ves_amount: number; charged_ref_amount: number; cash_usd_special_total: number | null; cash_price_revealed: boolean; worker_share_ref_snapshot: number | null; assistant_bonus_ref_snapshot: number | null };
+type Payment = { order_tenders:{id:string}|{id:string}[]|null; id: string; method: string; currency: string; amount_original: number; value_ves: number; value_ref: number; reference: string | null };
+type Receivable = { id: string; status: string; outstanding_ves: number; principal_ref: number; principal_usd: number | null; outstanding_fraction: number; due_date: string | null };
+type Rates = { bcv: number; operative: number };
+type BalancePocket = "USD" | "VES_BCV";
+type Modal = "PARTY" | "PRODUCT" | "SERVICE" | "PAYMENT" | "BALANCE" | "CREDIT" | "PARTIAL_CREDIT" | "CASHEA" | "PASS_THROUGH" | null;
+
+
+export function OrderWorkspace({ initialOrderId }: { initialOrderId?: string }) {
+  const router = useRouter();
+  const creatingOrder = useRef<Promise<string> | null>(null);
+  const [admin, setAdmin] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [notesKey, setNotesKey] = useState(0);
+  const [readinessError, setReadinessError] = useState("");
+  const [orderId, setOrderId] = useState<string | null>(initialOrderId ?? null);
+  const [order, setOrder] = useState<OrderRecord | null>(null);
+  const [inventoryProducts, setInventoryProducts] = useState<InventoryProduct[]>([]);
+  // El inventario es el único catálogo; la lista de precios vieja ya no se ofrece.
+  const catalogProducts: CatalogProduct[] = [];
+  
+  
+  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [items, setItems] = useState<Item[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [cashea, setCashea] = useState<{ financed_ref: number; initial_ref: number; status: string } | null>(null);
+  const [receivable, setReceivable] = useState<Receivable | null>(null);
+  const [rates, setRates] = useState<Rates>({ bcv: 0, operative: 0 });
+  const [customerBalance, setCustomerBalance] = useState<Record<BalancePocket,number>>({ USD: 0, VES_BCV: 0 });
+  const [modal, setModal] = useState<Modal>(null);
+  const [oilCandidates, setOilCandidates] = useState(0);
+  // Atajos desde Inicio: /orders/new?start=oil|workshop|electro abre directo el paso que toca.
+  const [intent, setIntent] = useState<"oil" | "workshop" | "electro" | null>(null);
+  const [serviceArea, setServiceArea] = useState<"WORKSHOP" | "ELECTROAUTO">("WORKSHOP");
+  useEffect(() => {
+    if (initialOrderId || typeof window === "undefined") return;
+    const start = new URLSearchParams(window.location.search).get("start");
+    if (start === "oil") { setIntent("oil"); setNotice("Cambio de aceite: primero elige el cliente y el vehículo."); setModal("PARTY"); }
+    if (start === "workshop" || start === "electro") { setIntent(start); setServiceArea(start === "electro" ? "ELECTROAUTO" : "WORKSHOP"); setModal("SERVICE"); }
+  }, [initialOrderId]);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const agreedUsd = items.reduce((n,i)=>n+Number(i.agreed_usd||0),0);
+  // Tasa implícita de una orden en USD; si no hay montos acordados (0) se usa la vigente para no mostrar Infinity/NaN.
+  const orderRates = items.length && agreedUsd > 0 && items.every(i=>i.price_denomination==="USD") ? {...rates,operative:items.reduce((n,i)=>n+Number(i.charged_ves_amount||0),0)/agreedUsd} : rates;
+  const totalVes = useMemo(() => items.reduce((a, i) => a + Number(i.charged_ves_amount || 0), 0), [items]);
+  const totalRef = useMemo(() => items.reduce((a, i) => a + Number(i.charged_ref_amount || 0), 0), [items]);
+  const listTotalRef = useMemo(() => items.reduce((a, i) => a + Number(i.list_ref_amount ?? i.charged_ref_amount ?? 0), 0), [items]);
+  const casheaSurchargeRef = useMemo(() => items.filter(i => i.line_role === "CASHEA_SURCHARGE").reduce((a, i) => a + Number(i.charged_ref_amount || 0), 0), [items]);
+  const adjustment: AdjustmentState = { discountPercent: Number(order?.adjust_discount_percent ?? 0), reason: order?.adjust_discount_reason ?? "", mode: (order?.adjust_rounding_mode ?? "NONE") as RoundingMode };
+  const allUsd = items.length>0&&items.every(i=>i.price_denomination==='USD');
+  const commercialTotal = allUsd?`$${items.reduce((sum,i)=>sum+Number(i.agreed_usd||0),0).toFixed(2)} USD`:fmtRef(totalRef);
+  const paidVes = useMemo(() => payments.reduce((a, p) => a + Number(p.value_ves || 0), 0), [payments]);
+  const paidRef = useMemo(() => payments.reduce((a, p) => a + Number(p.value_ref || 0), 0), [payments]);
+  const remainingVes = Math.max(totalVes - paidVes, 0);
+  const remainingRef = Math.max(totalRef - paidRef, 0);
+  const remainingCashUsd = orderRates.operative > 0 ? remainingVes / orderRates.operative : 0;
+  const status = order?.status ?? "OPEN";
+  const locked = status !== "OPEN";
+
+  // Carga en 2 viajes en vez de 4: todo lo que solo depende del id sale junto
+  // (incluidas las tasas congeladas de la orden); lo que depende del cliente,
+  // vehículo o estado sale en una segunda ronda paralela.
+  async function loadOrder(id: string) {
+    const [{ data: o, error: oe }, { data: its, error: ie }, { data: pays, error: pe }, { data: rec, error: re }, { data: cs, error: cse }, rateResult] = await Promise.all([
+      supabase.from("orders").select("id,order_number,status,customer_id,vehicle_id,is_walk_in,opened_at,closed_at,total_ves,total_ref,adjust_discount_percent,adjust_discount_reason,adjust_rounding_mode,adjust_cash_rounding_ref").eq("id", id).single(),
+      supabase.from("order_items").select("id,line_role,list_ref_amount,pass_through_cost_ref,price_denomination,agreed_usd,item_type,business_area,description,quantity,charged_ves_amount,charged_ref_amount,cash_usd_special_total,cash_price_revealed,worker_share_ref_snapshot,assistant_bonus_ref_snapshot").eq("order_id", id).order("created_at"),
+      supabase.from("payments").select("id,method,currency,amount_original,value_ves,value_ref,reference,order_tenders(id)").eq("order_id", id).order("paid_at"),
+      supabase.from("receivables").select("id,status,outstanding_ves,principal_ref,principal_usd,outstanding_fraction,due_date").eq("order_id", id).maybeSingle(),
+      supabase.from("cashea_sales").select("financed_ref,initial_ref,status").eq("order_id", id).maybeSingle(),
+      supabase.rpc("get_order_rates", { p_order_id: id }),
+    ]);
+    if (oe) throw oe;
+    if (ie) throw ie;
+    if (pe) throw pe;
+    if (re) throw re;
+    if (cse) throw cse;
+    setCashea(cs);
+    const row = o as OrderRecord;
+    if(rateResult.error)throw rateResult.error;
+    const rr=Array.isArray(rateResult.data)?rateResult.data[0]:rateResult.data;
+    setRates({bcv:Number(rr.bcv_rate),operative:Number(rr.operative_rate)});
+    setOrder(row);
+    setOrderId(row.id);
+    setItems((its ?? []) as Item[]);
+    setPayments((pays ?? []) as Payment[]);
+    setReceivable((rec ?? null) as Receivable | null);
+    const open = row.status === "OPEN";
+    const none = Promise.resolve({ data: null, error: null });
+    const [c, v, balance, readiness, cand] = await Promise.all([
+      row.customer_id ? supabase.from("customers").select("id,name,phone,document_id").eq("id", row.customer_id).single() : Promise.resolve({ data: null, error: null }),
+      row.vehicle_id ? supabase.from("vehicles").select("id,customer_id,plate,make,model,year,engine,current_odometer").eq("id", row.vehicle_id).single() : Promise.resolve({ data: null, error: null }),
+      row.customer_id ? supabase.from("customer_balance_accounts").select("pocket,balance_usd").eq("customer_id", row.customer_id) : Promise.resolve({ data: [], error: null }),
+      open ? supabase.rpc("validate_order_ready_to_close", { p_order_id: id }) : none,
+      open ? supabase.rpc("order_oil_change_candidates", { p_order_id: id }) : none,
+    ]);
+    if (c.error || v.error || balance.error) throw c.error || v.error || balance.error;
+    setCustomer(c.data); setVehicle(v.data);
+    const nextBalance: Record<BalancePocket,number> = { USD: 0, VES_BCV: 0 };
+    for (const account of balance.data ?? []) nextBalance[account.pocket as BalancePocket] = Number(account.balance_usd);
+    setCustomerBalance(nextBalance);
+    if (open) { setReadinessError(readiness.error?.message ?? ""); setOilCandidates(cand.error ? 0 : ((cand.data as unknown[] | null) ?? []).length); } else { setReadinessError(""); setOilCandidates(0); }
+  }
+
+  // Solo la primera carga muestra «Cargando orden…». Las recargas (cambio de
+  // precios, después de guardar) mantienen la pantalla y sus datos visibles.
+  const firstLoad = useRef(true);
+  async function bootstrap() {
+    if (firstLoad.current) setLoading(true);
+    setError("");
+    try {
+      // Catálogo y orden en paralelo: la orden no depende del inventario.
+      const orderLoad = initialOrderId ? loadOrder(initialOrderId) : Promise.resolve();
+      orderLoad.catch(() => undefined); // el error se recoge en el await de abajo
+      const [{ data: inv, error: invError }, { data: r, error: re }] = await Promise.all([
+        supabase.from("inventory_current").select("id,sku,brand,description,category,quantity_on_hand,product_id,catalog_product_name,current_price_ves,current_ref_bcv,needs_review,alt_codes").eq("location_code", "CENTRO").gt("quantity_on_hand", 0).eq("needs_review", false).order("category").order("brand").order("sku").limit(1000),
+        supabase.rpc("get_current_rates"),
+      ]);
+      if (invError) throw invError;
+      if (re) throw re;
+      setInventoryProducts((inv ?? []).map((x: any) => ({ ...x, quantity_on_hand: Number(x.quantity_on_hand ?? 0), current_price_ves: x.current_price_ves == null ? null : Number(x.current_price_ves), current_ref_bcv: x.current_ref_bcv == null ? null : Number(x.current_ref_bcv) })) as InventoryProduct[]);
+      // Con una orden abierta mandan sus tasas congeladas (las fija loadOrder).
+      const rateRow = Array.isArray(r) ? r[0] : r;
+      if (!initialOrderId) setRates({ bcv: Number(rateRow?.bcv_rate ?? 0), operative: Number(rateRow?.operative_rate ?? 0) });
+      await orderLoad;
+    } catch (e: any) { setError(e.message ?? String(e)); }
+    finally { firstLoad.current = false; setLoading(false); }
+  }
+
+  useEffect(() => {
+    canAdministerOrders().then(({data}) => setAdmin(data === true));
+    bootstrap();
+    const refreshPricing = () => bootstrap();
+    window.addEventListener("lubricenter:pricing-updated", refreshPricing);
+    return () => window.removeEventListener("lubricenter:pricing-updated", refreshPricing);
+  }, [initialOrderId]);
+
+  async function ensureOrder() {
+    if (orderId) return orderId;
+    if (creatingOrder.current) return creatingOrder.current;
+    creatingOrder.current = createNewOrder();
+    try { return await creatingOrder.current; } finally { creatingOrder.current = null; }
+  }
+
+  async function createNewOrder() {
+    const { data, error } = await supabase.rpc("create_order");
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    const newOrder: OrderRecord = { id: row.id, order_number: row.order_number, status: "OPEN", customer_id: null, vehicle_id: null, is_walk_in: false, opened_at: new Date().toISOString(), closed_at: null, total_ves: 0, total_ref: 0 };
+    setOrderId(row.id);
+    setOrder(newOrder);
+    void stampAttendant(row.id);
+    return row.id as string;
+  }
+
+  async function refresh(id = orderId) {
+    setNotesKey(k => k + 1);
+    if (!id) return;
+    await loadOrder(id);
+    if (!initialOrderId) router.replace(`/orders/${id}`);
+  }
+
+  async function removeItem(id: string) {
+    if (!orderId || locked) return;
+    const { error } = await supabase.rpc("delete_order_item", { p_item_id: id });
+    if (error) setError(error.message); else await refresh(orderId);
+  }
+
+  async function removePayment(id: string) {
+    if (!orderId || locked) return;
+    const { error } = await supabase.rpc("delete_payment", { p_payment_id: id });
+    if (error) setError(error.message); else await refresh(orderId);
+  }
+
+  async function deleteOrder() {
+    if (!orderId || locked) return;
+    if (!window.confirm(`¿Anular el borrador ${order?.order_number ?? "de esta orden"}?\n\nSe conservarán su número, sus productos y el motivo en el historial. Solo se permite sin cobros ni movimientos.`)) return;
+    setBusy(true); setError("");
+    const { error } = await supabase.rpc("delete_open_order", { p_order_id: orderId, p_reason: "Orden duplicada o creada por error desde Lubricenter OS" });
+    setBusy(false);
+    if (error) return setError(error.message);
+    router.push("/orders"); router.refresh();
+  }
+
+  async function closePaid() {
+    if (!orderId || !items.length || locked || busy) return;
+    if (readinessError) { setError(readinessError); if (/cliente|vehículo/i.test(readinessError)) setModal("PARTY"); return; }
+    if (remainingVes > 1) { setModal("PAYMENT"); return; }
+    if (paidVes - totalVes > 1) return setError(`Hay ${fmtVes(paidVes - totalVes)} de más. Quita el pago incorrecto y registra el monto correspondiente.`);
+    setBusy(true); setError("");
+    try {
+      const result = await supabase.rpc("close_order", { p_order_id: orderId });
+      if (result.error) throw result.error;
+      await refresh(orderId);
+      setNotice("Orden cerrada correctamente. Ya puedes imprimir el recibo o iniciar otra atención.");
+    } catch (e: any) { setError(`${e.message}. Revisa los pagos y las existencias. Actualiza la orden antes de reintentar.`); }
+    finally { setBusy(false); }
+  }
+  async function openOilChange(convert = false) {
+    if (!vehicle) { setNotice("Primero selecciona o crea el vehículo para guardar su cambio de aceite."); setModal("PARTY"); return; }
+    setBusy(true);
+    try { const id = await ensureOrder(); router.push(`/orders/${id}/oil-change${convert ? "?convert=1" : ""}`); }
+    catch (e: any) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+  useEffect(() => {
+    if (!modal) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const sheet = document.querySelector<HTMLElement>(".sheet");
+    sheet?.setAttribute("role", "dialog"); sheet?.setAttribute("aria-modal", "true");
+    sheet?.querySelector<HTMLElement>("input, button")?.focus();
+    function trap(e: KeyboardEvent) {
+      if (e.key !== "Tab") return;
+      const nodes = Array.from(sheet?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]') ?? []).filter(n => n.getClientRects().length);
+      const first = nodes[0], last = nodes[nodes.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+    document.addEventListener("keydown", trap);
+    return () => { document.body.style.overflow = overflow; document.removeEventListener("keydown", trap); previous?.focus(); };
+  }, [modal]);
+
+  if (loading) return <LoadingBlock label="Cargando orden…" kind="detail" />;
+
+  return <div className="stack mesa-order-workspace">
+    <section className="card brand-card"><div className="row-between"><div><div className="muted small">ORDEN</div><div className="money-lg">{order?.order_number ?? "Nueva orden"}</div>{order && <div className="muted small">Se guarda automáticamente en la nube.</div>}</div><span className={`pill ${status === "CLOSED" ? "ok" : status === "OPEN" ? "warn" : ""}`}>{status === "OPEN" ? "ABIERTA" : status === "CLOSED" ? "CERRADA" : "CANCELADA"}</span></div></section>
+    <CheckoutError message={error} />
+    {notice && <div className="success" role="status">{notice}</div>}
+    {!locked && <OrderDateEditor date={order?.opened_at} ensureOrder={ensureOrder} onSaved={async id => { await refresh(id); setNotice("Fecha de atención guardada."); }} />}
+    {orderId && <div className="row"><Link className="btn" href={`/orders/${orderId}/history`}>Historial de movimientos</Link>{admin && status === "CLOSED" && <Link className="btn btn-primary" href={`/orders/${orderId}/correct-service`}>Corregir servicio / CRM sin tocar cobros</Link>}{admin && status === "CLOSED" && cashea && <Link className="btn" href={`/orders/${orderId}/correct-payment`}>Rectificar inicial / banco Cashea</Link>}{admin && status === "CLOSED" && <Link className="btn" href={`/orders/${orderId}/correct`}>Corrección financiera de venta</Link>}</div>}
+    {!locked && <AttendantPicker orderId={orderId} />}
+    {!locked && oilCandidates > 0 && !items.some(i => i.item_type === "SERVICE" && i.business_area === "OIL_CHANGE") && <section className="card stack" style={{ borderColor: "rgba(255,93,21,.6)" }}>
+      <strong>¿Es un cambio de aceite?</strong>
+      <div className="muted small">Esta orden tiene aceite de motor o filtro de aceite como productos sueltos. Regístralo como cambio de aceite para que quede en el historial del carro y en el CRM. Las líneas se convierten, no se duplican.</div>
+      <button className="btn btn-primary" disabled={busy} onClick={() => void openOilChange(true)}>Sí, registrar como cambio de aceite</button>
+    </section>}
+    {!locked && <div className="order-steps"><span>1 · Cliente / vehículo</span><span>2 · Productos / trabajos</span><span>3 · Cobro / cierre</span></div>}
+    {cashea && status !== "CANCELLED" && <section className="card success"><strong>Orden cerrada con Cashea</strong><div>Inicial {fmtRef(cashea.initial_ref)} · financiado originalmente {fmtRef(cashea.financed_ref)}</div><Link className="btn" href="/cashea">Ver cuotas y saldo actual</Link></section>}
+    {receivable && status !== "CANCELLED" && <section className="card stack" style={{ borderColor: "rgba(255,93,21,.45)" }}><div className="row-between"><strong>Crédito LC</strong><span className={`pill ${receivable.status === "PAID" ? "ok" : "warn"}`}>{receivable.status === "PAID" ? "PAGADO" : "PENDIENTE"}</span></div><div className="money-lg">{receivable.principal_usd != null ? `$${(Number(receivable.outstanding_fraction) * Number(receivable.principal_usd)).toFixed(2)} en divisas` : fmtVes(receivable.outstanding_ves)}</div><div className="muted small">o {(Number(receivable.outstanding_fraction) * Number(receivable.principal_ref)).toFixed(2)} REF al BCV del día de pago · original {fmtRef(receivable.principal_ref)}{receivable.due_date ? ` · vence ${receivable.due_date}` : ""}</div></section>}
+    <section className="card stack mesa-order-party"><div className="row-between"><div><div className="label">Cliente y vehículo</div>{customer || vehicle ? <div><strong>{customer?.name || customer?.phone || "Cliente sin nombre"}</strong><div className="muted small">{[customer?.phone, vehicle?.plate, vehicle?.make, vehicle?.model, vehicle?.year].filter(Boolean).join(" · ")}</div>{vehicle?.current_odometer != null && <div className="muted small">Kilometraje: {vehicle.current_odometer.toLocaleString("es-VE")} km</div>}</div> : order?.is_walk_in ? <div><strong>Servicio rápido · sin cliente</strong><div className="muted small">Se puede cobrar y cerrar sin crear un cliente ficticio. No genera historial ni seguimiento CRM.</div></div> : <div className="muted">Asócialo para conservar historial o elige servicio rápido sin cliente.</div>}</div>{!locked && <button className="btn btn-ghost" onClick={() => setModal("PARTY")}>{customer || vehicle ? "Cambiar / nuevo vehículo" : order?.is_walk_in ? "Asociar cliente" : "Elegir atención"}</button>}</div></section>
+    {!locked && <section className="grid grid-3 mesa-order-add"><button className="btn btn-primary" onClick={() => setModal("PRODUCT")}>+ Aceite / producto</button><button className="btn" disabled={busy} onClick={() => void openOilChange()}>+ Cambio de aceite · seleccionar vehículo</button><button className="btn" onClick={() => setModal("SERVICE")}>+ Taller / electroauto</button><button className="btn" onClick={() => setModal("PASS_THROUGH")}>+ Compré algo para este trabajo</button></section>}
+    <section className="card mesa-order-lines"><div className="row-between"><h2 className="section-title">Productos y trabajos</h2><span className="muted small">{items.length} líneas</span></div>{items.map(item => <div className="order-item" key={item.id}><div className="row-between"><div><strong>{item.description}</strong><div className="muted small">{lineLabel(item)} · {item.quantity}x{item.line_role === "PASS_THROUGH" && item.pass_through_cost_ref != null ? ` · pagaste ${fmtRef(item.pass_through_cost_ref)} · ganancia ${fmtRef(Math.max(Number(item.charged_ref_amount) - Number(item.pass_through_cost_ref), 0))}` : ""}{item.list_ref_amount != null ? ` · antes ${fmtRef(item.list_ref_amount)}` : ""}</div></div>{!locked && item.line_role !== "CASHEA_SURCHARGE" && <button className="btn btn-ghost" onClick={() => removeItem(item.id)}>Quitar</button>}</div><div className="row-between"><div><strong>{item.price_denomination==="USD"?`${Number(item.agreed_usd).toFixed(2)} USD pactado`:fmtRef(item.charged_ref_amount)}</strong>{item.price_denomination!=='USD'&&<div className="muted small">{fmtVes(item.charged_ves_amount)}</div>}</div>{item.cash_price_revealed && item.cash_usd_special_total != null && <span className="pill">USD físico {fmtRef(item.cash_usd_special_total)}</span>}</div>{(Number(item.worker_share_ref_snapshot || 0) > 0 || Number(item.assistant_bonus_ref_snapshot || 0) > 0) && <div className="muted small">{item.business_area === "WORKSHOP" && <>Mecánico: {fmtRef(item.worker_share_ref_snapshot)} · Bono Técnico: {fmtRef(item.assistant_bonus_ref_snapshot)}</>}{item.business_area === "ELECTROAUTO" && <>Técnico: {fmtRef(item.worker_share_ref_snapshot)}</>}</div>}</div>)}{!items.length && <div className="muted">Todavía no hay productos ni trabajos en esta orden.</div>}</section>
+    {order && <OrderNotes orderId={order.id} refreshKey={notesKey} />}
+    {orderId && items.some(item=>item.item_type==="SERVICE" && item.business_area==="OIL_CHANGE") &&
+      <OrderAdditionalServices key={orderId} orderId={orderId}/>}
+    {!locked && orderId && items.length > 0 && <OrderAdjustments orderId={orderId} subtotal={listTotalRef} current={adjustment} casheaSurcharge={casheaSurchargeRef} hasPayments={payments.length > 0} onChanged={async msg => { try { await refresh(orderId); setNotice(msg); } catch (e: any) { setError(e.message); } }} />}
+    <section className="card stack mesa-order-total">{items.length > 0 && <OrderSplitSummary items={items} />}<div className="row-between"><strong>Total orden</strong><div style={{ textAlign: "right" }}><div className="money-lg">{commercialTotal}</div><div className="muted">{!allUsd&&fmtVes(totalVes)}</div></div></div><div className="divider" /><div className="row-between"><strong>Cubierto</strong><span>{allUsd?`$${(paidVes/orderRates.operative).toFixed(2)} USD`:fmtVes(paidVes)}</span></div><div className="row-between"><strong>{cashea ? "Diferencia cubierta por Cashea" : "Pendiente"}</strong><div style={{ textAlign: "right" }}><div>{allUsd?`$${remainingCashUsd.toFixed(2)} USD`:fmtVes(remainingVes)}</div>{!allUsd&&<div className="muted small">{fmtRef(remainingRef)} REF · ${remainingCashUsd.toFixed(2)} USD físico</div>}</div></div>{!locked && <button className="btn" disabled={!items.length} onClick={() => setModal("PAYMENT")}>+ Agregar pago</button>}{!locked && customer && (customerBalance.USD>0 || customerBalance.VES_BCV>0) && <button className="btn btn-block" disabled={!items.length || remainingVes<=1} onClick={() => setModal("BALANCE")}>Usar saldo a favor · Divisas {fmtRef(customerBalance.USD)} · Bs BCV {fmtRef(customerBalance.VES_BCV)}</button>}{payments.map(p => <div className="row-between" key={p.id}><div><span className="muted small">{paymentLabel(p.method)}</span>{p.reference && <div className="muted small">Ref. {p.reference}</div>}</div><div className="row"><strong>{p.currency === "USD" ? `$${Number(p.amount_original).toFixed(2)}` : fmtVes(p.amount_original)}</strong>{!locked && !(Array.isArray(p.order_tenders)?p.order_tenders.length>0:!!p.order_tenders) && <button className="btn btn-ghost" onClick={() => removePayment(p.id)}>×</button>}</div></div>)}</section>
+    {!locked ? <section className="card stack mesa-order-checkout">{readinessError && <div className="error" role="alert"><strong>Para cerrar:</strong> {readinessError}{/cliente|vehículo/i.test(readinessError) ? <button className="btn btn-block" onClick={() => setModal("PARTY")}>Completar cliente y vehículo</button> : /aceite/i.test(readinessError) ? <div>Quita la línea de servicio incompleta y usa “Cambio de aceite completo”.</div> : <div>Revisa la sección visible «Servicios adicionales y notas» o abre el estado preventivo.</div>}</div>}<button className="btn btn-ghost btn-block" onClick={() => router.push("/orders")}>Volver a órdenes · cambios guardados</button><button className="btn btn-block" disabled={busy || !items.length} onClick={() => setModal("CASHEA")}>Cobrar con Cashea</button><button className="btn btn-primary btn-block" disabled={busy || !items.length} onClick={closePaid}>{busy ? "Cerrando…" : remainingVes > 1 ? `Cobrar total · ${fmtVes(remainingVes)}` : "Cerrar orden pagada"}</button>{remainingVes > 1 && <button className="btn btn-block" disabled={busy || !items.length || !customer} style={{ border: "1px solid rgba(255,106,26,.72)", background: "rgba(255,106,26,.12)" }} onClick={() => setModal("PARTIAL_CREDIT")}>Abono + saldo a Crédito LC</button>}{paidVes - totalVes > 1 && <div className="error" role="alert">Pago excedido por {fmtVes(paidVes - totalVes)}. Quita el pago incorrecto antes de cerrar.</div>}{!items.length && <div className="muted">Agrega productos o trabajos antes de cobrar.</div>}{remainingVes > 1 && <button className="btn btn-block" disabled={busy || !items.length || !customer} onClick={() => setModal("CREDIT")}>Dejar todo en Crédito LC · {fmtVes(remainingVes)}</button>}{remainingVes > 1 && !customer && <div className="muted small" style={{ textAlign: "center" }}>Para Crédito LC primero asigna un cliente.</div>}{orderId && <button className="btn btn-ghost btn-block" disabled={busy} style={{ borderColor: "rgba(255,80,80,.45)", color: "#ff8b8b" }} onClick={deleteOrder}>Anular borrador sin cobros</button>}</section> : <button className="btn btn-ghost btn-block" onClick={() => router.push("/orders")}>Volver a órdenes</button>}
+    {orderId && <div className="grid grid-2"><Link className="btn" href={`/orders/${orderId}/receipt`}>Ver / imprimir recibo</Link><Link className="btn" href="/orders/new">+ Nueva atención</Link></div>}
+    {orderId && <details className="card"><summary>Estado preventivo, cortesías físicas y CRM avanzado</summary><div className="stack"><Link className="btn" href={`/orders/${orderId}/delivery`}>Estado preventivo y CRM avanzado</Link>{!locked && <OrderBonusProduct orderId={orderId} />}</div></details>}
+    {modal === "PARTY" && <OrderPartySheet currentCustomer={customer} currentVehicle={vehicle} ensureOrder={ensureOrder} onDone={async (c, v, id) => { setCustomer(c); setVehicle(v); setModal(null); setNotice("Cliente y vehículo guardados en esta orden."); if (intent === "oil" && v) { setIntent(null); router.push(`/orders/${id}/oil-change`); return; } try { await refresh(id); } catch (e: any) { setError(`Datos guardados. Recarga la orden para actualizar: ${e.message}`); } }} onWalkIn={async id => { setCustomer(null); setVehicle(null); setModal(null); setNotice("Servicio rápido activado. Puedes cobrar y cerrar sin registrar cliente ni vehículo."); try { await refresh(id); } catch (e: any) { setError(`Modo rápido guardado. Recarga la orden para actualizar: ${e.message}`); } }} onCancel={() => setModal(null)} />}
+    {modal === "PRODUCT" && <ProductSheet onPassThrough={() => setModal("PASS_THROUGH")} inventoryProducts={inventoryProducts} catalogProducts={catalogProducts} rates={orderRates} ensureOrder={ensureOrder} onDone={async id => { setModal(null); try { await refresh(id); setNotice("Guardado en la orden."); } catch (e: any) { setError(`La operación se guardó, pero no se pudo actualizar: ${e.message}. Recarga la orden; no la registres de nuevo.`); } }} onCancel={() => setModal(null)} />}
+    {modal === "PASS_THROUGH" && <PassThroughSheet rates={orderRates} ensureOrder={ensureOrder} onDone={async id => { setModal(null); try { await refresh(id); setNotice("Compra para el trabajo agregada. Solo el recargo cuenta como ganancia."); } catch (e: any) { setError(`Se guardó, pero no se pudo actualizar: ${e.message}. Recarga la orden.`); } }} onCancel={() => setModal(null)} />}
+    {modal === "SERVICE" && <ServiceSheet notice={laborRuleNotice(!!order?.customer_id, !!order?.vehicle_id)} initialArea={serviceArea} onOilChange={() => { setModal(null); void openOilChange(); }} ensureOrder={ensureOrder} onDone={async id => { setModal(null); try { await refresh(id); setNotice("Guardado en la orden."); } catch (e: any) { setError(`La operación se guardó, pero no se pudo actualizar: ${e.message}. Recarga la orden; no la registres de nuevo.`); } }} onCancel={() => setModal(null)} />}
+    {orderId && <OrderChangePanel key={`${orderId}:${payments.length}`} orderId={orderId} />}
+    {modal === "CASHEA" && orderId && <OrderCasheaSheet orderId={orderId} totalRef={totalRef} totalVes={totalVes} paidVes={paidVes} onCancel={async () => { setModal(null); try { await refresh(orderId); } catch {} }} onDone={async () => { setModal(null); setNotice("Orden cerrada con Cashea. La inicial y las cuotas quedaron registradas."); try { await refresh(orderId); } catch (e: any) { setError(`Cierre registrado. Recarga la orden: ${e.message}`); } }} />}
+    {modal === "PAYMENT" && <PaymentSheet onCashea={() => setModal("CASHEA")} ensureOrder={ensureOrder} customer={customer} remainingVes={remainingVes} rates={orderRates} fixedUsd={items.length>0&&items.every(i=>i.price_denomination==='USD')?remainingVes/orderRates.operative:undefined} cashRoundingRef={Number(order?.adjust_cash_rounding_ref??0)} onRefresh={refresh} onDone={async (id,credited) => { setModal(null); try { await refresh(id); setNotice(credited>0?`Pago registrado. El sobrante quedó como saldo a favor del cliente.`:"Guardado en la orden."); } catch (e: any) { setError(`La operación se guardó, pero no se pudo actualizar: ${e.message}. Recarga la orden; no la registres de nuevo.`); } }} onCancel={() => setModal(null)} />}
+    {modal === "BALANCE" && orderId && customer && <BalanceSheet orderId={orderId} customer={customer} balances={customerBalance} remainingVes={remainingVes} rates={orderRates} onDone={async () => { setModal(null); try { await refresh(orderId); setNotice("Saldo a favor aplicado. Puedes completar el pago o cerrar la orden."); } catch (e:any) { setError(`El saldo se aplicó, pero no se pudo actualizar: ${e.message}. Recarga la orden; no lo apliques otra vez.`); } }} onCancel={() => setModal(null)} />}
+    {modal === "CREDIT" && orderId && <CreditSheet orderId={orderId} customer={customer} remainingVes={remainingVes} remainingRef={remainingRef} onDone={() => { setModal(null); router.push("/orders"); router.refresh(); }} onCancel={() => setModal(null)} />}
+    {modal === "PARTIAL_CREDIT" && orderId && <PartialCreditSheet orderId={orderId} customer={customer} remainingVes={remainingVes} remainingRef={remainingRef} rates={orderRates} onDone={() => { setModal(null); router.push("/orders"); router.refresh(); }} onCancel={() => setModal(null)} />}
+  </div>;
+}
+
+/** Barra de reparto: lo que paga el cliente, lo de los mecánicos y lo que gana Lubricenter (aprox.). */
+function OrderSplitSummary({ items }: { items: Item[] }) {
+  const total = items.reduce((a, i) => a + Number(i.charged_ref_amount || 0), 0);
+  const mechanics = items.reduce((a, i) => a + Number(i.worker_share_ref_snapshot || 0) + Number(i.assistant_bonus_ref_snapshot || 0), 0);
+  const gain = items.reduce((a, i) => {
+    const charged = Number(i.charged_ref_amount || 0);
+    if (i.line_role === "PASS_THROUGH") return a + charged - Number(i.pass_through_cost_ref ?? charged);
+    if (i.item_type === "SERVICE" || i.line_role === "CASHEA_SURCHARGE") return a + charged - Number(i.worker_share_ref_snapshot || 0) - Number(i.assistant_bonus_ref_snapshot || 0);
+    return a + charged - Number(i.list_ref_amount ?? charged) / 1.35;
+  }, 0);
+  return <div className="row" style={{ gap: 16, flexWrap: "wrap", padding: "8px 0" }} aria-label="Reparto de la orden">
+    <span><span className="muted small">Cliente paga</span> <strong>{fmtRef(total)}</strong></span>
+    {mechanics > 0 && <span><span className="muted small">Mecánico y Técnico</span> <strong>{fmtRef(mechanics)}</strong></span>}
+    <span><span className="muted small">Lubricenter gana aprox.</span> <strong>{fmtRef(gain)}</strong></span>
+  </div>;
+}
+
+function lineLabel(item: Item) {
+  if (item.line_role === "PASS_THROUGH") return "Compra para el trabajo";
+  if (item.line_role === "CASHEA_SURCHARGE") return "Recargo Cashea · solo Lubricenter";
+  if (item.item_type === "SERVICE" && item.business_area === "WORKSHOP") return "Taller";
+  if (item.item_type === "SERVICE" && item.business_area === "ELECTROAUTO") return "Electroauto";
+  if (item.item_type === "SERVICE") return "Servicio Lubricenter";
+  return "Producto";
+}
+
+function paymentLabel(method: string) { return ({ POR_COBRAR: "Por cobrar", MOBILE_PAYMENT: "Pago móvil · Banco de Venezuela", TRANSFER_BDV: "Pago móvil · Banco de Venezuela", TRANSFER_BNC: "Pago móvil · BNC", CASH_VES: "Efectivo Bs", ZELLE:"Zelle USD",BINANCE:"Binance USD",CASH_USD: "Efectivo USD", CUSTOMER_BALANCE_USD: "Saldo a favor · divisas", CUSTOMER_BALANCE_BCV: "Saldo a favor · Bs a BCV" } as Record<string,string>)[method] ?? method; }
+
+function ProductSheet({ inventoryProducts, catalogProducts, rates, ensureOrder, onDone, onCancel, onPassThrough }: { onPassThrough: () => void; inventoryProducts: InventoryProduct[]; catalogProducts: CatalogProduct[]; rates: Rates; ensureOrder: () => Promise<string>; onDone: (id:string)=>void|Promise<void>; onCancel:()=>void; }) {
+  const manualAllowed=allowsManualSale(useInventorySalePolicy());
+  const [mode,setMode]=useState<"STOCK"|"CATALOG"|"MANUAL">("STOCK"); const [search,setSearch]=useState(""); const [selectedId,setSelectedId]=useState(""); const [qty,setQty]=useState(1); const [unitRef,setUnitRef]=useState(""); const [manualDescription,setManualDescription]=useState(""); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
+  const q=search.trim().toLowerCase(); const filteredInventory=inventoryProducts.filter(p=>matchesSearch(inventorySearchText(p), q)).slice(0,q ? 12 : 6); const filteredCatalog=catalogProducts.filter(p=>matchesSearch(`${p.filter_code??""} ${p.name} ${p.category??""}`, q)).slice(0,q ? 12 : 6);
+  const selectedInventory=mode==="STOCK"?inventoryProducts.find(p=>p.id===selectedId)??null:null; const selectedCatalog=mode==="CATALOG"?catalogProducts.find(p=>p.id===selectedId)??null:null; const suggestedRef=selectedInventory?.current_ref_bcv??selectedCatalog?.current_ref_bcv??null; const effectiveUnitRef=unitRef===""?(suggestedRef??0):Number(unitRef);
+  function switchMode(next:"STOCK"|"CATALOG"|"MANUAL"){setMode(next);setSelectedId("");setUnitRef("");setError("");if(next==="MANUAL"&&search.trim())setManualDescription(search.trim());}
+  function chooseInventory(id:string){const p=inventoryProducts.find(x=>x.id===id);setSelectedId(id);setUnitRef(p?.current_ref_bcv!=null?Number(p.current_ref_bcv).toFixed(2):"");setError("");requestAnimationFrame(()=>document.getElementById("product-price")?.focus());}
+  function chooseCatalog(id:string){const p=catalogProducts.find(x=>x.id===id);setSelectedId(id);setUnitRef(p?.current_ref_bcv!=null?Number(p.current_ref_bcv).toFixed(2):"");setError("");requestAnimationFrame(()=>document.getElementById("product-price")?.focus());}
+  async function add(){if(busy)return;if(!Number.isFinite(qty)||qty<=0)return setError("La cantidad debe ser mayor que cero.");if(!Number.isFinite(effectiveUnitRef)||effectiveUnitRef<=0)return setError("Indica el precio unitario REF que vas a cobrar.");setBusy(true);setError("");try{const id=await ensureOrder();if(mode==="STOCK"){if(!selectedInventory)throw new Error("Selecciona un producto del inventario.");if(qty>selectedInventory.quantity_on_hand)throw new Error(`Stock insuficiente. Disponible: ${selectedInventory.quantity_on_hand}. Usa “Catálogo sin stock” si igual necesitas venderlo.`);const{error}=await supabase.rpc("add_inventory_product_item",{p_order_id:id,p_inventory_item_id:selectedInventory.id,p_quantity:qty,p_manual_unit_ref:effectiveUnitRef,p_business_area:"STORE"});if(error)throw error;}else if(mode==="CATALOG"){if(!selectedCatalog)throw new Error("Selecciona un producto del catálogo.");const{error}=await supabase.rpc("add_catalog_product_item_override",{p_order_id:id,p_product_id:selectedCatalog.id,p_quantity:qty,p_manual_unit_ref:effectiveUnitRef});if(error)throw error;}else{if(!manualDescription.trim())throw new Error("Escribe el nombre o descripción del producto.");const{error}=await supabase.rpc("add_manual_product_item",{p_order_id:id,p_description:manualDescription.trim(),p_quantity:qty,p_unit_ref:effectiveUnitRef});if(error)throw error;}await onDone(id);}catch(e:any){setError(e.message??String(e));}finally{setBusy(false);}}
+  const canAdd=mode==="STOCK"?!!selectedInventory:mode==="CATALOG"?!!selectedCatalog:!!manualDescription.trim(); const displayName=selectedInventory?`${selectedInventory.sku} · ${selectedInventory.brand??"Producto"}`:(selectedCatalog?.name??manualDescription)||"Producto manual";
+  return <div className="overlay"><div className="sheet stack"><div className="row-between"><div><h2 style={{margin:0}}>Agregar producto</h2><div className="muted small">Todo sale del inventario: busca por nombre, código o marca.</div></div><button className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cerrar</button></div><div className="segmented"><button className={`btn ${mode==="STOCK"?"btn-primary":"btn-ghost"}`} onClick={()=>switchMode("STOCK")}>Con stock</button>{manualAllowed&&<button className={`btn ${mode==="MANUAL"?"btn-primary":"btn-ghost"}`} onClick={()=>switchMode("MANUAL")}>Venta manual</button>}</div>{mode!=="MANUAL"&&<label><span className="label">Buscar producto</span><input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="SKU, marca, filtro, aceite o descripción" autoFocus/></label>}{mode==="STOCK"&&<><div className="muted small">{inventoryProducts.length} referencias con existencia física disponibles.</div><div className="stack" style={{maxHeight:300,overflow:"auto"}}>{filteredInventory.map(p=><button key={p.id} className="btn btn-ghost" style={{textAlign:"left",borderColor:p.id===selectedId?"#ff5d15":undefined}} onClick={()=>chooseInventory(p.id)}><div className="row-between"><strong>{p.catalog_product_name??`${p.sku} · ${p.brand??"Producto"}`}</strong><span className="pill">Stock {p.quantity_on_hand}</span></div><div className="small">{p.sku} · {p.description}</div><div className="muted small">{p.category??"Sin rubro"} · {p.current_ref_bcv!=null?`${fmtRef(p.current_ref_bcv)} sugerido`:"precio manual"}</div></button>)}{!filteredInventory.length&&<div className="card stack"><strong>No aparece con existencia.</strong><div className="muted small">{manualAllowed?"Si de verdad está en el estante, regístralo en Inventario o véndelo como venta manual.":"Pide a un administrador que lo cargue en Inventario antes de venderlo."}</div>{manualAllowed&&<button className="btn" onClick={()=>switchMode("MANUAL")}>Venta manual</button>}</div>}</div></>}{mode==="CATALOG"&&<><div className="success small">Esta venta no descuenta inventario físico. Úsala cuando el conteo todavía no esté actualizado o la existencia real aún no esté cargada.</div><div className="muted small">{catalogProducts.length} productos disponibles en el catálogo.</div><div className="stack" style={{maxHeight:300,overflow:"auto"}}>{filteredCatalog.map(p=><button key={p.id} className="btn btn-ghost" style={{textAlign:"left",borderColor:p.id===selectedId?"#ff5d15":undefined}} onClick={()=>chooseCatalog(p.id)}><div className="row-between"><strong>{p.filter_code?`${p.filter_code} · `:""}{p.name}</strong><span className="pill">SIN CONTROL STOCK</span></div><div className="muted small">{p.category??"Producto"} · {p.current_ref_bcv!=null?`${fmtRef(p.current_ref_bcv)} sugerido`:"confirma precio"}</div></button>)}{!filteredCatalog.length&&<div className="card stack"><strong>No aparece en el catálogo.</strong>{manualAllowed?<><div className="muted small">Regístralo como venta manual para no frenar la atención.</div><button className="btn" onClick={()=>switchMode("MANUAL")}>Vender manualmente</button></>:<div className="muted small">Pide a un administrador que lo cargue en inventario antes de venderlo.</div>}</div>}</div></>}{mode==="MANUAL"&&manualAllowed&&<div className="card stack"><div className="success small">Para productos que todavía no están bien cargados en catálogo/inventario. Queda en la orden, pero no altera stock.</div><label><span className="label">Producto / descripción</span><input className="input" value={manualDescription} onChange={e=>setManualDescription(e.target.value)} placeholder="Ej. Valvoline 10W30 Mineral" autoFocus/></label>{/cashea/i.test(manualDescription)&&<div className="card brand-card small">El recargo de Cashea ya no se escribe a mano: se agrega solo al tocar «Cobrar con Cashea», únicamente sobre la mano de obra.</div>}{/repuesto|compr|pago |pila|bomba|refrigerante|corpocar/i.test(manualDescription)&&<div className="card brand-card stack"><strong>¿Lo compraste afuera para este trabajo?</strong><div className="small">Regístralo como compra para el trabajo: así solo el recargo cuenta como ganancia.</div><button type="button" className="btn btn-primary" onClick={onPassThrough}>Compré algo para este trabajo</button></div>}</div>}{(selectedInventory||selectedCatalog||mode==="MANUAL")&&<div className="card stack"><div className="row-between"><div><strong>{displayName}</strong>{selectedInventory&&<div className="muted small">{selectedInventory.description}</div>}</div>{selectedInventory?<span className="pill">Disponible {selectedInventory.quantity_on_hand}</span>:<span className="pill warn">SIN DESCUENTO STOCK</span>}</div><div className="grid grid-2"><label><span className="label">Cantidad</span><NumberInput className="input" kind="qty" min={0.01} step={0.01} value={qty} onChange={e=>setQty(Number(e.target.value))}/></label><label><span className="label">Precio a cobrar REF · unitario</span><NumberInput id="product-price" className="input" kind="money" min="0.01" step="0.01" value={unitRef} onChange={e=>setUnitRef(e.target.value)} placeholder={suggestedRef!=null?suggestedRef.toFixed(2):"Precio manual"}/></label></div>{suggestedRef!=null&&<div className="muted small">Precio sugerido actual: {fmtRef(suggestedRef)} por unidad. Puedes modificarlo solo para esta orden.</div>}<div className="row-between"><span>Total a cobrar</span><div style={{textAlign:"right"}}><strong>{fmtRef(effectiveUnitRef*qty)}</strong><div className="muted small">{fmtVes(effectiveUnitRef*qty*rates.bcv)}</div></div></div></div>}{canAdd && (!Number.isFinite(effectiveUnitRef) || effectiveUnitRef <= 0) && <div className="error" role="alert">Este producto necesita un precio. Escribe el precio unitario REF para poder agregarlo.</div>}<CheckoutError message={error} /><button className="btn btn-primary btn-block" disabled={busy||!canAdd||!Number.isFinite(effectiveUnitRef)||effectiveUnitRef<=0||!Number.isFinite(qty)||qty<=0} onClick={add}>{busy?"Agregando…":mode==="STOCK"?"Agregar a la orden · stock al cerrar":"Agregar a la orden"}</button></div></div>;
+}
+
+function ServiceSheet({ ensureOrder, onDone, onCancel, onOilChange, initialArea = "WORKSHOP", notice = null }: { ensureOrder:()=>Promise<string>; onDone:(id:string)=>void|Promise<void>; onCancel:()=>void; onOilChange:()=>void; initialArea?: "WORKSHOP"|"ELECTROAUTO"; notice?: string | null; }) {
+  const [denomination,setDenomination]=useState("REF"); const [area,setArea]=useState<"WORKSHOP"|"ELECTROAUTO"|"OIL_CHANGE">(initialArea); const [description,setDescription]=useState(""); const [baseRef,setBaseRef]=useState(0); const [customerRef,setCustomerRef]=useState(0); const [bonus,setBonus]=useState(true); const [advanced,setAdvanced]=useState(false); const [workerOverride,setWorkerOverride]=useState(""); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
+  useEffect(()=>{if(customerRef===0&&baseRef>0)setCustomerRef(baseRef);},[baseRef]); const preview=useMemo(()=>{try{if(area==="WORKSHOP")return workshopAllocation({baseRef,customerRef,techBonusEnabled:bonus,mechanicOverrideRef:workerOverride===""?null:Number(workerOverride)});if(area==="ELECTROAUTO")return electroautoAllocation({baseRef,customerRef,techOverrideRef:workerOverride===""?null:Number(workerOverride)});return{customerRef,lubricenterRef:customerRef};}catch(e:any){return{error:e.message}as any;}},[area,baseRef,customerRef,bonus,workerOverride]);
+  function displayAmount(value:number){return denomination==="USD"?`${Number(value||0).toFixed(2)} USD`:fmtRef(value);}
+  async function add(){if(busy||!Number.isFinite(baseRef)||!Number.isFinite(customerRef)||!description.trim()||baseRef<=0||customerRef<0||preview.error)return;setBusy(true);setError("");try{const id=await ensureOrder();const{error}=await supabase.rpc("add_service_priced",{p_denomination:denomination,p_order_id:id,p_business_area:area,p_description:description.trim(),p_base_ref:baseRef,p_customer_ref:customerRef,p_worker_share_override_ref:workerOverride===""?null:Number(workerOverride),p_tech_bonus_enabled:area==="WORKSHOP"?bonus:false});if(error)throw error;await onDone(id);}catch(e:any){setError(e.message??String(e));}finally{setBusy(false);}}
+  return <div className="overlay"><div className="sheet stack"><div className="row-between"><h2 style={{margin:0}}>Trabajo / servicio</h2><button className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cerrar</button></div>{notice&&<div className="muted small" role="note">⚠️ {notice}</div>}<label><span className="label">Área</span><select className="select" value={area} onChange={e=>setArea(e.target.value as any)}><option value="WORKSHOP">Taller · Mecánico</option><option value="ELECTROAUTO">Electroauto · Técnico</option></select></label><label><span className="label">Precio acordado</span><select className="select" value={denomination} onChange={e=>setDenomination(e.target.value)}><option value="REF">Referencia BCV · base en bolívares</option><option value="USD">USD pactado · dólares reales</option></select><span className="muted small">{denomination==="USD"?"Si acordaste $40, registra 40. Base y comisiones se calculan en esta misma denominación.":"El monto REF se convierte a bolívares a tasa BCV."}</span></label><label><span className="label">Descripción</span><input className="input" value={description} onChange={e=>setDescription(e.target.value)} placeholder="Ej. Cambio de amortiguadores"/></label>{/cambio de aceite|\baceite\b/i.test(description)&&<div className="card brand-card stack"><strong>¿Es un cambio de aceite?</strong><div className="small">Si lo registras como trabajo de taller, Mecánico cobra 40% y no entra al CRM. Regístralo como cambio de aceite.</div><button type="button" className="btn btn-primary" onClick={onOilChange}>Registrar como cambio de aceite</button></div>}<div className="grid grid-2"><label><span className="label">Base {denomination}</span><NumberInput className="input" kind="money" min="0" step="0.01" value={baseRef||""} onChange={e=>setBaseRef(Number(e.target.value))}/></label><label><span className="label">Cobro al cliente {denomination}</span><NumberInput className="input" kind="money" min="0" step="0.01" value={customerRef||""} onChange={e=>setCustomerRef(Number(e.target.value))}/></label></div>{area==="WORKSHOP"&&<label className="row"><input type="checkbox" checked={bonus} onChange={e=>setBonus(e.target.checked)}/><span>Bono meritorio Técnico 5% (sale de Lubricenter)</span></label>}{area!=="OIL_CHANGE"&&<button className="btn btn-ghost" onClick={()=>setAdvanced(v=>!v)}>{advanced?"Ocultar ajuste":"Ajustar reparto excepcional"}</button>}{advanced&&area!=="OIL_CHANGE"&&<label><span className="label">Parte acordada {area==="WORKSHOP"?"Mecánico":"Técnico"} {denomination}</span><NumberInput className="input" kind="money" min="0" step="0.01" value={workerOverride} onChange={e=>setWorkerOverride(e.target.value)} placeholder="Vacío = 40% automático"/></label>}<div className="card">{preview.error?<div className="error">{preview.error}</div>:area==="WORKSHOP"?<div className="stack"><div className="row-between"><span>Cliente</span><strong>{displayAmount(preview.customerRef)}</strong></div><div className="row-between"><span>Mecánico</span><strong>{displayAmount(preview.mechanicRef)}</strong></div><div className="row-between"><span>Bono Técnico</span><strong>{displayAmount(preview.techBonusRef)}</strong></div><div className="row-between"><span>Lubricenter</span><strong>{displayAmount(preview.lubricenterRef)}</strong></div></div>:area==="ELECTROAUTO"?<div className="stack"><div className="row-between"><span>Cliente</span><strong>{displayAmount(preview.customerRef)}</strong></div><div className="row-between"><span>Técnico</span><strong>{displayAmount(preview.techRef)}</strong></div><div className="row-between"><span>Lubricenter</span><strong>{displayAmount(preview.lubricenterRef)}</strong></div></div>:<div className="row-between"><span>Total servicio</span><strong>{displayAmount(customerRef)}</strong></div>}</div><CheckoutError message={error} /><button className="btn btn-primary btn-block" disabled={busy||!!preview.error||!description.trim()||baseRef<=0} onClick={add}>{busy?"Agregando…":"Agregar trabajo"}</button></div></div>;
+}
+
+function PaymentSheet({ onCashea, ensureOrder, customer, remainingVes, rates, fixedUsd, cashRoundingRef, onRefresh, onDone, onCancel }: { onCashea:()=>void; ensureOrder:()=>Promise<string>; customer:Customer|null; remainingVes:number; rates:Rates; fixedUsd?:number; cashRoundingRef:number; onRefresh:(id:string)=>Promise<unknown>; onDone:(id:string,credited:number)=>void|Promise<void>; onCancel:()=>void; }) {
+ const [method,setMethod]=useState("TRANSFER_BDV"),[reference,setReference]=useState(""),[error,setError]=useState(""),[busy,setBusy]=useState(false);
+ const request=useRef<string|null>(null);
+ const cash=method==="CASH_USD"||method==="CASH_VES";
+ const porCobrar=method==="POR_COBRAR";
+ const currency=["CASH_USD","ZELLE","BINANCE"].includes(method)?"USD":"VES";
+ const [roundBusy,setRoundBusy]=useState(false);
+ async function roundCash(direction:CashRoundDirection){if(roundBusy||busy)return;setRoundBusy(true);setError("");try{const id=await ensureOrder();const{error}=await supabase.rpc("round_order_cash_remainder",{p_order_id:id,p_direction:direction});if(error)throw error;request.current=null;await onRefresh(id);}catch(e:any){setError(e.message??String(e));}finally{setRoundBusy(false);}}
+ const [draft,setDraft]=useState<TenderDraft>({received:remainingVes.toFixed(2),returnUsd:"0",returnCurrency:"USD",changeRate:String(rates.bcv),customerLabel:customer?.name||customer?.phone||"",confirmed:false});
+ useEffect(()=>{setDraft(d=>({...d,received:cash?"":(currency==="USD"?remainingVes/rates.operative:fixedUsd!==undefined?fixedUsd*rates.bcv:remainingVes).toFixed(2),changeRate:String(rates.bcv),returnUsd:"0",confirmed:false}));request.current=null;},[method,remainingVes,rates.operative,rates.bcv,fixedUsd]);
+ function update(d:TenderDraft){if(!busy){setDraft(d);request.current=null;}}
+ async function add(){
+  if(busy||(cash&&!draft.confirmed))return;
+  const re=referenceError(method,reference);if(re)return setError(re);
+  setBusy(true);setError("");request.current??=crypto.randomUUID();
+  if(porCobrar){try{const id=await ensureOrder();const {error}=await supabase.rpc("order_add_por_cobrar",{p_order_id:id,p_note:reference.trim()});if(error)throw error;await onDone(id,0);}catch(e:any){setError(e.message??String(e));}finally{setBusy(false);}return;}
+  try{const id=await ensureOrder();const {error}=await supabase.rpc("collect_order_tender",{p_request:request.current,p_order:id,p_method:method,p_received:draft.received,p_return_usd:draft.returnUsd||"0",p_return_currency:draft.returnCurrency,p_change_rate:draft.changeRate,p_reference:reference.trim()||null,p_customer_label:draft.customerLabel.trim()||null});if(error)throw error;request.current=null;await onDone(id,0);}catch(e:any){setError(e.message??String(e));}finally{setBusy(false);}
+ }
+ return <div className="overlay os-side"><div className="sheet stack os-tender-sheet" role="dialog" aria-modal="true" aria-label="Cobro y vuelto"><div className="row-between"><h2>{cash?"Cobro y vuelto":"Registrar pago"}</h2><button className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cerrar</button></div><button className="btn" onClick={onCashea} disabled={busy}>Cashea · inicial y cuotas</button><label>Cómo recibes el dinero<select className="select" disabled={busy} value={method} onChange={e=>{setMethod(e.target.value);setReference("");}}>{[["TRANSFER_BDV","Pago móvil · Venezuela"],["TRANSFER_BNC","Pago móvil · BNC"],["CASH_USD","Dólares físicos"],["CASH_VES","Bolívares físicos"],["ZELLE","Zelle"],["BINANCE","Binance"],["POR_COBRAR","Por cobrar · nota obligatoria"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>{porCobrar?<label>Nota obligatoria: qué se debe y quién lo cobra<textarea className="input" rows={2} maxLength={1000} disabled={busy} value={reference} onChange={e=>setReference(e.target.value)} placeholder="Ej. Lo cobró el negocio de al lado; abona a nuestra deuda"/><span className="muted small">Cubre todo el saldo pendiente. No entra a ningún banco ni caja: queda en la cuenta «Por cobrar».</span></label>:!method.startsWith("CASH")&&<label>Referencia<input className="input" disabled={busy} value={reference} onChange={e=>{setReference(e.target.value);request.current=null;}}/></label>}{!porCobrar&&<fieldset disabled={busy} style={{border:0,padding:0}}><TenderFields cash={cash} value={draft} onChange={update} currency={currency} remainingVes={remainingVes} paymentRate={rates.operative} fixedUsd={fixedUsd} onRoundCash={method==="CASH_USD"&&fixedUsd===undefined?roundCash:undefined} cashRoundingRef={cashRoundingRef} roundBusy={roundBusy}/></fieldset>}<CheckoutError message={error} /><button className="btn btn-primary" disabled={busy||(!porCobrar&&((cash&&!draft.confirmed)||!Number.isFinite(Number(draft.received))||Number(draft.received)<=0))} onClick={add}>{busy?"Registrando…":porCobrar?"Dejar por cobrar":cash?"Registrar cobro y vuelto":"Registrar pago"}</button></div></div>;
+}
+
+function BalanceSheet({ orderId, customer, balances, remainingVes, rates, onDone, onCancel }: {
+  orderId:string; customer:Customer; balances:Record<BalancePocket,number>; remainingVes:number; rates:Rates;
+  onDone:()=>void|Promise<void>; onCancel:()=>void;
+}) {
+  const requestId = useRef<string|null>(null);
+  const [pocket,setPocket] = useState<BalancePocket>(balances.VES_BCV>0?"VES_BCV":"USD");
+  const [amount,setAmount] = useState("");
+  const [busy,setBusy] = useState(false);
+  const [error,setError] = useState("");
+  const rate = pocket==="VES_BCV"?rates.bcv:rates.operative;
+  const maxByOrder = rate>0?Math.floor((remainingVes/rate+1e-9)*100)/100:0;
+  const available = Math.min(balances[pocket],maxByOrder);
+  const units = amount.trim()===""?available:Number(amount);
+  const covered = rate>0?Math.round(units*rate*100)/100:0;
+  async function apply() {
+    if(busy)return;
+    if(!Number.isFinite(units)||units<=0||units>available)return setError("Indica un monto dentro del saldo y del pendiente de la orden.");
+    setBusy(true);setError("");requestId.current??=crypto.randomUUID();
+    const {error}=await supabase.rpc("apply_customer_balance",{
+      p_order_id:orderId,p_pocket:pocket,p_amount_usd:amount.trim()===""?null:units,p_request_id:requestId.current,
+    });
+    setBusy(false);if(error)return setError(error.message);
+    requestId.current=null;await onDone();
+  }
+  return <div className="overlay"><div className="sheet stack" role="dialog" aria-modal="true" aria-labelledby="balance-title"><div className="row-between"><div><h2 id="balance-title" style={{margin:0}}>Usar saldo a favor</h2><div className="muted small">{customer.name||customer.phone||"Cliente"} · no entra dinero nuevo a caja.</div></div><button className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cerrar</button></div><div className="grid grid-2"><button className={pocket==="VES_BCV"?"btn btn-primary":"btn"} disabled={busy||balances.VES_BCV<=0} onClick={()=>{setPocket("VES_BCV");setAmount("");setError("");requestId.current=null;}}>Bs a BCV · {fmtRef(balances.VES_BCV)}</button><button className={pocket==="USD"?"btn btn-primary":"btn"} disabled={busy||balances.USD<=0} onClick={()=>{setPocket("USD");setAmount("");setError("");requestId.current=null;}}>Divisas · {fmtRef(balances.USD)}</button></div><div className="card stack"><div className="row-between"><span>Pendiente de la orden</span><strong>{fmtVes(remainingVes)}</strong></div><div className="row-between"><span>Disponible para esta orden</span><strong>{fmtRef(available)}</strong></div><div className="muted small">{pocket==="VES_BCV"?`Se convierte a BCV de la orden: ${rates.bcv.toLocaleString("es-VE")} Bs/USD.`:`Las divisas se aplican a la tasa de la orden: ${rates.operative.toLocaleString("es-VE")} Bs/USD.`}</div></div><label><span className="label">USD de saldo a usar · vacío = máximo posible</span><NumberInput className="input" kind="money" min="0.01" max={available} step="0.01" value={amount} onChange={e=>{setAmount(e.target.value);setError("");requestId.current=null;}} placeholder={available.toFixed(2)}/></label><div className="row-between"><span>Quedará cubierto</span><strong>{fmtVes(covered)}</strong></div><div className="muted small">Si aún queda diferencia, puedes cobrarla con otro método o dejarla en Crédito LC.</div><CheckoutError message={error} /><button className="btn btn-primary btn-block" disabled={busy||available<=0||units<=0||units>available} onClick={apply}>{busy?"Aplicando…":"Aplicar saldo a la orden"}</button></div></div>;
+}
+
+function CreditSheet({ orderId, customer, remainingVes, remainingRef, onDone, onCancel }: { orderId:string; customer:Customer|null; remainingVes:number; remainingRef:number; onDone:()=>void; onCancel:()=>void; }) {
+  const [dueDate,setDueDate]=useState(""); const [busy,setBusy]=useState(false); const [error,setError]=useState(""); async function confirm(){if(!customer)return setError("Debes asociar un cliente antes de usar Crédito LC.");setBusy(true);setError("");const{error}=await supabase.rpc("close_order_with_credit",{p_order_id:orderId,p_due_date:dueDate||null});setBusy(false);if(error)return setError(error.message);onDone();}
+  return <div className="overlay"><div className="sheet stack"><div className="row-between"><h2 style={{margin:0}}>Cerrar con Crédito LC</h2><button className="btn btn-ghost" onClick={onCancel}>Cancelar</button></div><div className="card stack" style={{borderColor:"rgba(255,93,21,.45)"}}><div className="muted small">CLIENTE</div><strong>{customer?.name||customer?.phone||"Sin cliente"}</strong><div className="divider"/><div className="row-between"><span>Saldo que quedará pendiente</span><div style={{textAlign:"right"}}><strong>{fmtVes(remainingVes)}</strong><div className="muted small">{fmtRef(remainingRef)}</div></div></div></div><label><span className="label">Fecha de pago esperada · opcional</span><input className="input" type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)}/></label><div className="muted small">La orden se cerrará y el saldo quedará en Cuentas por Cobrar. No se considera un pago hasta que el cliente realmente abone.</div><CheckoutError message={error} /><button className="btn btn-primary btn-block" disabled={busy||!customer||remainingVes<=1} onClick={confirm}>{busy?"Cerrando…":"Confirmar Crédito LC"}</button></div></div>;
+}
+
+function PartialCreditSheet({ orderId, customer, remainingVes, remainingRef, rates, onDone, onCancel }: { orderId:string; customer:Customer|null; remainingVes:number; remainingRef:number; rates:Rates; onDone:()=>void; onCancel:()=>void; }) {
+  const [method,setMethod]=useState("TRANSFER_BDV"); const currency=["CASH_USD","ZELLE","BINANCE"].includes(method)?"USD":"VES"; const maxAmount=currency==="USD"?(rates.operative?remainingVes/rates.operative:0):remainingVes; const [amount,setAmount]=useState(0); const [reference,setReference]=useState(""); const [dueDate,setDueDate]=useState(""); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
+  useEffect(()=>{setAmount(Number((maxAmount*.5).toFixed(2)));},[method,remainingVes,rates.operative]);
+  const paidVes=currency==="USD"?amount*rates.operative:amount; const pendingVes=Math.max(remainingVes-paidVes,0); const pendingRef=rates.bcv?pendingVes/rates.bcv:0;
+  async function confirm(){
+    if(!customer)return setError("Debes asociar un cliente antes de usar Crédito LC.");
+    if(!Number.isFinite(amount)||amount<=0)return setError("Indica el abono que recibiste.");
+    const re=referenceError(method,reference);if(re)return setError(re);
+    if(paidVes>=remainingVes-1)return setError("Para cerrar todo como pagado usa “Cobrar total”. El abono debe dejar un saldo pendiente.");
+    setBusy(true);setError("");
+    const{error}=await supabase.rpc("close_order_with_partial_credit",{p_order_id:orderId,p_method:method,p_amount_original:amount,p_reference:reference.trim()||null,p_due_date:dueDate||null});
+    setBusy(false);if(error)return setError(error.message);onDone();
+  }
+  return <div className="overlay"><div className="sheet stack"><div className="row-between"><div><h2 style={{margin:0}}>Abono + Crédito LC</h2><div className="muted small">Registra lo recibido y deja el resto a nombre del cliente.</div></div><button className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancelar</button></div><div className="card stack" style={{borderColor:"rgba(255,106,26,.65)"}}><div className="muted small">CLIENTE</div><strong>{customer?.name||customer?.phone||"Sin cliente"}</strong><div className="divider"/><div className="row-between"><span>Total pendiente actual</span><div style={{textAlign:"right"}}><strong>{fmtVes(remainingVes)}</strong><div className="muted small">{fmtRef(remainingRef)}</div></div></div></div><div><span className="label">Cómo recibiste el abono</span><div className="grid grid-2">{[["TRANSFER_BDV","Pago móvil · Venezuela"],["TRANSFER_BNC","Pago móvil · BNC"],["CASH_VES","Efectivo Bs"],["CASH_USD","Efectivo USD"],["ZELLE","Zelle USD"],["BINANCE","Binance USD"]].map(([value,label])=><button type="button" key={value} className={method===value?"btn btn-primary":"btn"} onClick={()=>setMethod(value)}>{method===value?`✓ ${label}`:label}</button>)}</div></div><label><span className="label">Abono recibido · {currency}</span><NumberInput className="input" kind="money" min="0.01" step="0.01" max={maxAmount} value={amount||""} onChange={e=>setAmount(Number(e.target.value))}/></label>{method.startsWith("TRANSFER")&&<label><span className="label">Últimos 4 de referencia · obligatorio</span><input className="input" value={reference} onChange={e=>setReference(e.target.value)}/></label>}<label><span className="label">Fecha prometida de pago · opcional</span><input className="input" type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)}/></label><div className="grid grid-2"><div className="card"><div className="muted small">ABONO QUE ENTRA HOY</div><strong>{fmtVes(paidVes)}</strong></div><div className="card" style={{borderColor:"rgba(255,106,26,.55)"}}><div className="muted small">SALDO CRÉDITO LC</div><strong>{fmtVes(pendingVes)}</strong><div className="muted small">{fmtRef(pendingRef)}</div></div></div><CheckoutError message={error} /><button className="btn btn-primary btn-block" disabled={busy||!customer||amount<=0||pendingVes<=1} onClick={confirm}>{busy?"Registrando…":"Cobrar abono y cerrar con Crédito LC"}</button></div></div>;
+}
+
