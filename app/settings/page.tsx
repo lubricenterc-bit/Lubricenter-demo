@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { financeRole as fetchFinanceRole } from "@/lib/session-cache";
-import { FinanceNotifications } from '@/components/finance-notifications';
 import { DailyRateHistory } from '@/components/daily-rate-history';
 import { BillingSettings } from '@/components/billing-settings';
 import { NumberInput } from "@/components/number-field";
@@ -155,7 +154,7 @@ export default function SettingsPage() {
 
     <BillingSettings />
     <ReceiptSettings />
-    <FinanceNotifications />
+
     <DailyRateHistory />
     <section className="card stack">
       <div className="row-between"><h2 className="section-title">Mensaje post-servicio · CRM</h2><span className="pill ok">EDITABLE</span></div>

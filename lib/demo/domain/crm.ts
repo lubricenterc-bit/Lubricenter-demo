@@ -31,7 +31,7 @@ export function vehicleJourneys(s: DemoState): Row[] {
     if (!v) continue;
     const cycleDue = (sr.next_service_date as string) ?? addDays(toDay(sr.performed_at as string), 90);
     const days = diffDays(today, cycleDue);
-    const sent = follow.filter(f => f.service_record_id === sr.id && f.sent_at).sort((a, b) => String(a.sent_at).localeCompare(String(b.sent_at)));
+    const sent = follow.filter(f => f.service_record_id === sr.id && f.sent_at && f.status === "SENT").sort((a, b) => String(a.sent_at).localeCompare(String(b.sent_at)));
     const last = sent.at(-1);
     const withOutcome = [...follow.filter(f => f.service_record_id === sr.id && f.outcome)].sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at))).at(-1);
     const first = (sent[0]?.kind as MessageKind | undefined) ?? firstKind(days) ?? "DUE";
@@ -49,7 +49,8 @@ export function vehicleJourneys(s: DemoState): Row[] {
     else if (permission === "OPT_OUT") status = "OPTED_OUT";
     else if (outcome === "BOOKED" && withOutcome?.outcome_on && String(withOutcome.outcome_on) >= today) status = "BOOKED";
     else if (outcome === "RETURNED") status = "RETURNED";
-    else if (outcome === "DECLINED" || outcome === "SOLD_VEHICLE") status = "CLOSED";
+    else if (["DECLINED", "SOLD_VEHICLE", "DISMISSED", "OTHER_SHOP", "WRONG_NUMBER"].includes(String(outcome))) status = "CLOSED";
+    else if (outcome === "POSTPONED" && withOutcome?.outcome_on && String(withOutcome.outcome_on) > today) status = "SCHEDULED";
     else if (sent.length && !outcome && nextKind && eligible && eligible > today) status = "WAITING_REPLY";
     else if (sent.length >= max && !outcome) status = days > 365 ? "DORMANT" : "CLOSED_NO_REPLY";
     else if (days < -7) status = "UPCOMING";
@@ -59,7 +60,8 @@ export function vehicleJourneys(s: DemoState): Row[] {
       service_record_id: sr.id, vehicle_id: v.id, customer_id: c?.id ?? null, customer_name: c?.name ?? null, customer_phone: phone, wa_phone: waPhone(phone),
       plate: v.plate, make: v.make, model: v.model, year: v.year, performed_at: sr.performed_at, oil_brand: sr.oil_brand, oil_viscosity: sr.oil_viscosity,
       next_service_odometer: sr.next_service_odometer, cycle_due: cycleDue, days_from_due: days, forecast_confidence: "MEDIUM", due_reason: "CALENDAR",
-      permission, sent_count: sent.length, max_msgs: sent.length ? max : null, last_sent_at: last?.sent_at ?? null, next_kind: nextKind, eligible_on: eligible,
+      permission, sent_count: sent.length, max_msgs: sent.length ? max : null, last_sent_at: last?.sent_at ?? null, next_kind: nextKind,
+      eligible_on: outcome === "POSTPONED" && withOutcome?.outcome_on ? withOutcome.outcome_on : eligible,
       last_outcome: outcome ?? null, last_outcome_on: withOutcome?.outcome_on ?? null, awaiting_reply: status === "WAITING_REPLY", status,
       bucket: recoveryBucket(days),
     });

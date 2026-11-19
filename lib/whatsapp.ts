@@ -1,9 +1,7 @@
-// Enlace único para abrir WhatsApp con texto precargado.
+// Enlace para «abrir WhatsApp» con el texto listo.
 //
-// No usar https://wa.me/…?text=…: WhatsApp redirige wa.me a api.whatsapp.com/send
-// y en esa redirección los emojis llegan rotos (un rombo o triángulo con «?»).
-// Yendo directo a api.whatsapp.com/send los emojis se ven bien en teléfono,
-// WhatsApp Web y la app de escritorio.
+// Versión de muestra: nunca sale a WhatsApp. El enlace es interno (#whatsapp?…) y
+// components/demo/whatsapp-sheet.tsx muestra el mensaje que saldría.
 export function whatsappUrl(phone?: string | null, text?: string | null) {
   const params: string[] = [];
   const digits = (phone ?? "").replace(/\D/g, "");
@@ -13,5 +11,5 @@ export function whatsappUrl(phone?: string | null, text?: string | null) {
     const safe = text.normalize("NFC").replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
     params.push(`text=${encodeURIComponent(safe)}`);
   }
-  return `https://api.whatsapp.com/send${params.length ? `?${params.join("&")}` : ""}`;
+  return `#whatsapp${params.length ? `?${params.join("&")}` : ""}`;
 }

@@ -12,6 +12,7 @@ import { runEngine, summarizePeriod, BRANCHES, type ClassifiedLine, type EngineE
 import { bdvPanel, exportSheets, ORIGIN_LABELS, RULE_LABELS } from "@/lib/cashea-conciliation/report";
 import { engineInputFrom, type Dataset } from "@/lib/cashea-conciliation/dataset";
 import { learnedRulesFrom } from "@/lib/cashea-conciliation/learned";
+import { buildSampleFiles, downloadSampleFiles } from "@/lib/demo/sample-files";
 import { bdvUpload, importCasheaUploads, readCasheaFiles, UPLOAD_KIND_LABEL as KIND_LABEL, type Upload } from "@/lib/cashea-conciliation/upload";
 import type { TunnelRule } from "@/lib/tunnels/types";
 import "./conciliacion.css";
@@ -207,6 +208,13 @@ export default function CasheaConciliationPage() {
       <h2 className="section-title">Cargar reportes</h2>
       <p className="muted small">Sube juntos el estado de cuenta del BNC (Rpt*.xls), el export de pagos (export_*.xlsx) y el de órdenes de Cashea (ordenes_*.xlsx). Se pueden solapar: lo repetido no se duplica y cada orden queda con su versión más reciente.</p>
       <input className="input" type="file" multiple accept=".xls,.xlsx" disabled={busy} onChange={e => { const f = e.target.files; void run(() => readFiles(f)); e.target.value = ""; }} />
+      <div className="demo-samples">
+        <span className="muted small">Versión de muestra: prueba con reportes de ejemplo hechos con los datos ficticios de hoy.</span>
+        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+          <button className="btn btn-primary" disabled={busy} onClick={() => run(async () => { const files = await buildSampleFiles(); const next = await readCasheaFiles(files); setUploads(u => [...u.filter(x => !next.some(n => n.name === x.name)), ...next]); })}>Usar archivos de ejemplo</button>
+          <button className="btn btn-ghost" disabled={busy} onClick={() => run(async () => downloadSampleFiles())}>Descargar archivos de ejemplo</button>
+        </div>
+      </div>
       <details><summary className="muted small">BDV de Centro (opcional): pegar movimientos copiados de la web del banco</summary>
         <textarea className="textarea" rows={5} value={bdvText} onChange={e => setBdvText(e.target.value)} placeholder="Fecha · Referencia · Descripción · Débito / Crédito · Monto · Saldo" />
         <button className="btn" disabled={busy || !bdvText.trim()} onClick={() => run(async () => addBdv())}>Revisar BDV pegado</button>

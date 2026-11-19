@@ -301,7 +301,7 @@ function casheaSale(order: Row, offset: number) {
   });
   add("cashea_sales", { id, order_id: order.id, receivable_id: null, status: paidCount === 3 ? "SETTLED" : "ACTIVE", initial_percent: 40, commission_percent: 4,
     gross_ref: ref, gross_ves_snapshot: ves(ref), initial_ref: initial, initial_ves_snapshot: ves(initial), financed_ref: financed, commission_ref: r2(new D(ref).mul(0.04)),
-    commission_ves_snapshot: ves(r2(new D(ref).mul(0.04))), bcv_rate_snapshot: BCV, initial_payment_method: "TRANSFER_BDV", cashea_reference: `EJ${pad(100000 + casheaSeq * 37, 7)}`,
+    commission_ves_snapshot: ves(r2(new D(ref).mul(0.04))), bcv_rate_snapshot: BCV, initial_payment_method: "TRANSFER_BDV", cashea_reference: String(9100000 + casheaSeq * 37),
     created_at: when, settled_at: paidCount === 3 ? insts[2].paid_at : null, created_by: null, ownership_status: "OWN", ownership_reason: null, ownership_evidence: null });
 }
 
@@ -425,9 +425,13 @@ for (const it of items) {
   add("inventory_items", { id: it.id, sku: it.sku, brand: it.brand, description: it.description, category: it.category, unit: it.unit, source_cost_ref: it.cost, source_stock_imported: null,
     source_alert: null, source_price_status: it.price_ref == null ? "SIN_PRECIO" : "OK", source_row: null, product_id: null, needs_review: false, cost_missing: it.cost == null, active: true,
     source_name: "EJEMPLO", imported_at: at(-120, 7), updated_at: at(-5, 7), source_rows: null, source_duplicate_count: 0, average_cost_ref: it.cost, last_purchase_cost_ref: it.cost, last_purchased_at: null,
-    merged_into: null, last_counted_at: at(-30, 7), alt_codes: [], display_name: null, price_usd: it.price_ref == null ? null : r2(new D(it.price_ref).mul(BCV).div(OPERATIVE)), price_ref: it.price_ref,
+    merged_into: null, last_counted_at: at(-30, 7), alt_codes: [], display_name: it.description, price_usd: it.price_ref == null ? null : r2(new D(it.price_ref).mul(BCV).div(OPERATIVE)), price_ref: it.price_ref,
     price_updated_at: at(-30, 7), image_url: null, in_catalog: true, viscosity: it.viscosity ?? null });
 }
+
+// Fuentes de los reportes que se importan en la conciliación Cashea.
+for (const [provider, name] of [["CASHEA_TRANSACTIONS", "Pagos Cashea"], ["CASHEA_ORDERS", "Órdenes Cashea"], ["BDV", "Banco de Venezuela"]] as const)
+  add("external_sources", { id: `src-${provider.toLowerCase()}`, provider, name, account_id: null, external_account: null, currency: "VES", active: true, created_at: at(-120, 8, 0), created_by: null });
 
 // Personal (selector de perfil de la muestra)
 for (const [id, profile, name] of [["stf-owner", "OWNER", "Dueño"], ["stf-admin", "ADMIN", "Administración"], ["stf-reception", "RECEPTION", "Recepción"], ["stf-mechanic", "MECHANIC", "Mecánico de taller"]] as const)

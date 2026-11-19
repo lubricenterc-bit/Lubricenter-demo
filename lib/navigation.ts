@@ -21,11 +21,6 @@ export const NAV_MODULES: readonly NavModule[] = [
   { id: "home", label: "Inicio", icon: "home", defaultHref: "/inicio", links: [
     { href: "/inicio", label: "Mi jornada", description: "Acciones de hoy y pendientes" }
   ] },
-  { id: "tunnels", label: "Túneles", icon: "layers", defaultHref: "/tunnels", links: [
-    { href: "/tunnels", label: "Túneles pendientes", description: "Conciliaciones y cierres guiados, una decisión a la vez", ownerOnly: true, keywords: "tunel pendiente conciliar cuadrar guiado decision cashea" },
-    { href: "/tunnels/rules", label: "Reglas aprendidas", description: "Lo que el sistema ya sabe resolver solo", ownerOnly: true, keywords: "regla aprendida automatica" },
-    { href: "/tunnels/informes", label: "Informes de cierre", description: "Cuadre, decisiones y qué mejorar de cada cierre", ownerOnly: true, keywords: "informe reporte cierre resumen analisis whatsapp excel" }
-  ] },
   { id: "sales", label: "Ventas", icon: "sale", defaultHref: "/quick-sale", links: [
     { href: "/quick-sale", label: "Venta rápida", description: "Cotizar y cobrar al mostrador", keywords: "facturar cobrar" },
     { href: "/quote", label: "Cotizador general", description: "Cotizar productos, servicios y compartir; pasar directo a venta u orden", keywords: "cotizar presupuesto aceite filtro productos cliente whatsapp" },
@@ -33,40 +28,25 @@ export const NAV_MODULES: readonly NavModule[] = [
     { href: "/orders", label: "Órdenes", description: "Consultar órdenes abiertas y cerradas" },
     { href: "/orders/new", label: "Nueva orden", description: "Crear una orden de servicio o cambio de aceite", keywords: "recibir vehículo" }
   ] },
-  { id: "workshop", label: "Taller", icon: "workshop", defaultHref: "/workshop", links: [
-    { href: "/workshop", label: "Tablero de vehículos", description: "Recepción, reparación y entrega", keywords: "mecánica avance" },
-    { href: "/workshop/propuestas", label: "Cotizaciones de mecánicos", description: "Precios de mano de obra que proponen Mecánico y Técnico", keywords: "cotizar mano de obra mechanic tech propuesta presupuesto" }
-  ] },
   { id: "customers", label: "Clientes", icon: "customers", defaultHref: "/customers", links: [
     { href: "/customers", label: "Directorio", description: "Clientes y vehículos" },
-    { href: "/crm/manual", label: "CRM manual", description: "Pendientes, servicios prepagados y mantenimiento sin orden obligatoria", keywords: "prepago cashea diferido agenda recordatorio servicio manual" },
     { href: "/service-history", label: "Historial de mantenimiento", description: "Cambios de aceite y servicios antiguos de Sheets y del OS", keywords: "servicio anterior histórico aceite placa factura mantenimiento" },
-    { href: "/crm", label: "Seguimiento", description: "Mensajes de hoy: postservicio y recordatorios de cambio de aceite", keywords: "recordatorios mantenimiento whatsapp crm postservicio clientes citas" },
-    { href: "/campaigns", label: "Campañas", description: "Promociones y contacto con clientes" }
+    { href: "/crm", label: "Seguimiento", description: "Mensajes de hoy: postservicio y recordatorios de cambio de aceite", keywords: "recordatorios mantenimiento whatsapp crm postservicio clientes citas" }
   ] },
   { id: "inventory", label: "Inventario", icon: "inventory", defaultHref: "/inventory", links: [
     { href: "/inventory", label: "Inventario", description: "Todos los artículos: existencia, precio, costo y catálogo", keywords: "existencia conteo precio costo articulos productos editar crear" },
     { href: "/catalog", label: "Catálogo", description: "Lo que está a la venta, con sus precios", keywords: "foto productos catalogo lista precios" },
     { href: "/expenses", label: "Compras y proveedores", description: "Facturas, mercancía, deudas y pagos", keywords: "egresos" }
   ] },
-  { id: "finance", label: "Finanzas", icon: "finance", defaultHref: "/cash-close", links: [
-    { href: "/finance", label: "Resumen financiero", description: "Ventas, cobros y obligaciones", ownerOnly: true },
+  { id: "finance", label: "Finanzas", icon: "finance", defaultHref: "/receivables", links: [
     { href: "/finance/profit", label: "Ganancias", description: "Cuánto ganó la tienda y cuánto el taller", ownerOnly: true, keywords: "utilidad margen ganancia tienda taller" },
-    { href: "/cash-close", label: "Cierre diario", description: "Conteo físico, historial y correcciones", keywords: "arqueo cuadre" },
-    { href: "/cash", label: "Caja y movimientos", description: "Cuentas, salidas y transferencias", keywords: "gastos egresos" },
-    { href: "/finance/reconcile", label: "Conciliación semanal", description: "Banco y control del período", ownerOnly: true, keywords: "BDV" },
-    { href: "/finance/inbox", label: "Revisión financiera", description: "Casos, importaciones y reportes", ownerOnly: true },
     { href: "/cashea", label: "Órdenes Cashea", description: "Cobros y cuotas de Cashea" },
     { href: "/cashea/conciliacion", label: "Conciliación Cashea", description: "Dinero del BNC por sucursal y por cobrar", ownerOnly: true, keywords: "BNC sucursal sede 2 sede 3 retiro cero" },
-    { href: "/cashea/balance", label: "Balance Cashea", description: "Liquidaciones, facturas y comisiones", ownerOnly: true },
     { href: "/receivables", label: "Crédito LC", description: "Cuentas por cobrar y abonos" },
-    { href: "/customer-balances", label: "Saldos de clientes", description: "Anticipos y devoluciones" },
-    { href: "/change", label: "Vueltos pendientes", description: "Vueltos por entregar" },
-    { href: "/payroll", label: "Nómina", description: "Liquidaciones y pagos al equipo", ownerOnly: true }
+    { href: "/change", label: "Vueltos pendientes", description: "Vueltos por entregar" }
   ] },
   { id: "admin", label: "Administración", icon: "settings", defaultHref: "/settings", links: [
     { href: "/settings", label: "Configuración y precios", description: "Tasas, sincronización y reglas" },
-    { href: "/settings/usuarios", label: "Usuarios", description: "Cuentas del personal: perfil, contraseña y permisos", ownerOnly: true, keywords: "usuario cuenta contraseña permiso acceso mecanico tablet" },
     { href: "/ayuda", label: "Ayuda", description: "¿Cómo hago…? Pasos y acceso directo a cada función", keywords: "ayuda como hago tutorial pasos no se donde esta" }
   ] }
 ];

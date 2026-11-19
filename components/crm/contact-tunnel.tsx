@@ -1,4 +1,5 @@
 "use client";
+import { simulateWhatsapp } from "@/components/demo/whatsapp-sheet";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { OsIcon } from "@/components/os-icon";
@@ -73,21 +74,18 @@ export function ContactTunnel({ queue, pending = [], sentToday, cap, onClose }: 
     if (!item || busy) return;
     if (message.trim().length < 20) { setError("El mensaje está vacío o muy corto."); return; }
     const link = waLink(item.wa_phone, message);
-    const tab = window.open("", "_blank");
     setBusy(true); setError("");
     const r = await supabase.rpc("crm_open_send", { p_type: item.type, p_id: item.id, p_kind: item.kind, p_message: message });
     setBusy(false);
-    if (r.error) { tab?.close(); setError(r.error.message); return; }
+    if (r.error) { setError(r.error.message); return; }
     setAttempts(a => ({ ...a, [item.id]: (r.data as { attempt_id: string }).attempt_id }));
-    if (tab && !tab.closed) { try { tab.opener = null; } catch { /* sin acceso */ } tab.location.href = link; }
-    else window.location.href = link;
+    simulateWhatsapp(link);
     setPhase("confirm");
   }
 
   function reopenWhatsapp() {
     if (!item) return;
-    const tab = window.open(waLink(item.wa_phone, message), "_blank", "noopener,noreferrer");
-    if (!tab) window.location.href = waLink(item.wa_phone, message);
+    simulateWhatsapp(waLink(item.wa_phone, message));
   }
 
   async function confirmSent() {

@@ -8,7 +8,12 @@ import { orders } from "./orders";
 import { receivables } from "./receivables";
 import { customers } from "./customers";
 import { oil } from "./oil";
+import { profit } from "./profit";
+import { inventory } from "./inventory";
+import { purchasing } from "./purchasing";
+import { cashea } from "./cashea";
+import { settings } from "./settings";
 
 export const HANDLERS: Record<string, Handler> = {
-  ...session, ...crm, ...sales, ...orders, ...receivables, ...customers, ...oil,
+  ...session, ...crm, ...sales, ...orders, ...receivables, ...customers, ...oil, ...profit, ...inventory, ...purchasing, ...cashea, ...settings,
 };

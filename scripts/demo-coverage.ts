@@ -40,11 +40,11 @@ const handlersDir = path.join(root, "lib/demo/rpc");
 const rpcHandlers = new Set(
   fs.existsSync(handlersDir)
     ? fs.readdirSync(handlersDir).filter(f => f.endsWith(".ts") && !["index.ts", "ctx.ts"].includes(f))
-        .flatMap(f => [...fs.readFileSync(path.join(handlersDir, f), "utf8").matchAll(/^\s{2}([a-z0-9_]+):\s*(?:async\s*)?\(/gm)].map(m => m[1]))
+        .flatMap(f => [...fs.readFileSync(path.join(handlersDir, f), "utf8").matchAll(/^\s{2}([a-z0-9_]+):\s*(?:async\s*)?(?:\(|notInDemo\()/gm)].map(m => m[1]))
     : [],
 );
 // RPC que se llaman con el nombre en una variable (lib/session-cache.ts).
-const DYNAMIC_RPC = ["my_profile", "finance_role", "can_administer_orders"];
+const DYNAMIC_RPC = ["my_profile", "finance_role", "can_administer_orders", "cancel_order", "cancel_order_to_customer_balance"];
 const tablesFile = path.join(root, "lib/demo/tables.ts");
 const tableHandlers = new Set(
   fs.existsSync(tablesFile) ? [...fs.readFileSync(tablesFile, "utf8").matchAll(/^\s*"?([a-z0-9_]+)"?\s*:/gm)].map(m => m[1]) : [],
