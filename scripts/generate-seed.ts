@@ -386,7 +386,7 @@ add("crm_message_templates", { kind: "RECONNECT", body: "¡Hola, {{nombre}}! Te 
 // Compras: facturas de proveedor con entrada al inventario
 for (let k = 0; k < 10; k++) {
   const sup = suppliers[k % suppliers.length];
-  const offset = -int(3, 85);
+  const offset = k < 2 ? -(k + 1) : -int(3, 85);
   const id = `inv-${pad(k + 1, 3)}`;
   const brands = (T.supplier_brands ?? []).filter(b => b.supplier_id === sup.id).map(b => b.brand_key);
   const pool = items.filter(i => brands.includes(i.brand.toLowerCase()) && i.cost != null && i !== outOfStock);

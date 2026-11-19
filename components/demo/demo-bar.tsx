@@ -39,7 +39,7 @@ export function DemoBar() {
   return (
     <>
       <div className="demo-bar" role="region" aria-label="Versión de muestra">
-        <span className="demo-bar__tag">Versión de muestra · datos ficticios{mode === "prototipo" ? " · modo prototipo" : ""}</span>
+        <span className="demo-bar__tag">Versión de muestra<span className="demo-wide"> · datos ficticios</span>{mode === "prototipo" ? " · prototipo" : ""}</span>
         <span className="demo-bar__actions">
           {inside && (
             <label className="demo-bar__profile">
@@ -49,13 +49,13 @@ export function DemoBar() {
               </select>
             </label>
           )}
-          <button type="button" className="demo-bar__btn" onClick={switchMode} aria-pressed={mode === "prototipo"}>{mode === "muestra" ? "Modo prototipo" : "Salir del prototipo"}</button>
+          <button type="button" className="demo-bar__btn" onClick={switchMode} aria-pressed={mode === "prototipo"}>{mode === "muestra" ? <>Modo<span className="demo-wide"> prototipo</span></> : <>Salir<span className="demo-wide"> del prototipo</span></>}</button>
           {confirmReset
             ? <span className="demo-bar__confirm">¿Volver a los datos iniciales?
                 <button type="button" className="demo-bar__btn" onClick={() => { resetDemo(); setConfirmReset(false); window.location.reload(); }}>Sí, reiniciar</button>
                 <button type="button" className="demo-bar__btn" onClick={() => setConfirmReset(false)}>No</button></span>
-            : <button type="button" className="demo-bar__btn" onClick={() => setConfirmReset(true)}>Reiniciar la muestra</button>}
-          <Link className="demo-bar__btn" href="/proyectos/">Proyectos</Link>
+            : <button type="button" className="demo-bar__btn" onClick={() => setConfirmReset(true)}>Reiniciar<span className="demo-wide"> la muestra</span></button>}
+          <Link className="demo-bar__btn demo-wide" href="/proyectos/">Proyectos</Link>
         </span>
       </div>
       {notice && (

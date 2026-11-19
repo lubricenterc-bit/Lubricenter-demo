@@ -3,6 +3,8 @@ import { journeysToday } from "./crm";
 import { fail, type Handler } from "./ctx";
 
 const NAMES = { OWNER: "Dueño", ADMIN: "Administración", RECEPTION: "Recepción", MECHANIC: "Mecánico de taller" } as const;
+// Las tasas de ejemplo se muestran como publicadas hace un rato: la app las considera vigentes.
+const recent = () => new Date(Date.now() - 30 * 60000).toISOString();
 const day = (iso: unknown) => new Date(Date.parse(String(iso)) - 4 * 3600000).toISOString().slice(0, 10);
 
 export const session: Record<string, Handler> = {
@@ -24,8 +26,8 @@ export const session: Record<string, Handler> = {
     for (let i = 0; i < 120 && d <= to; i++) { out.push({ business_date: d, bcv_rate: c.rates.bcv, operative_rate: c.rates.operative, bcv_date: d, operative_date: d }); d = new Date(Date.parse(`${d}T12:00:00Z`) + 86400000).toISOString().slice(0, 10); }
     return out.reverse();
   },
-  get_pricing_sync_status: (_a, c) => [{ catalog_synced_at: c.now(), catalog_products: c.t("inventory_items").length, bcv_rate: c.rates.bcv, bcv_effective_at: `${c.today}T12:00:00.000Z`, operative_rate: c.rates.operative, operative_effective_at: `${c.today}T12:00:00.000Z` }],
-  get_exchange_rate_control_status: (_a, c) => ({ exchange_rate_authority: "MANUAL", bcv_rate: c.rates.bcv, operative_rate: c.rates.operative, bcv_effective_at: `${c.today}T12:00:00.000Z`, operative_effective_at: `${c.today}T12:00:00.000Z`, last_success_at: c.now(), example: true }),
+  get_pricing_sync_status: (_a, c) => [{ catalog_synced_at: c.now(), catalog_products: c.t("inventory_items").length, bcv_rate: c.rates.bcv, bcv_effective_at: recent(), operative_rate: c.rates.operative, operative_effective_at: recent() }],
+  get_exchange_rate_control_status: (_a, c) => ({ exchange_rate_authority: "MANUAL", bcv_rate: c.rates.bcv, operative_rate: c.rates.operative, bcv_effective_at: recent(), operative_effective_at: recent(), last_success_at: c.now(), example: true }),
   get_bcv_official_status: (_a, c) => ({ rate: c.rates.bcv, effective_date: c.today, checked_at: c.now(), ok: true, example: true }),
   inventory_sale_policy: (_a, c) => ({ strict: true, can_override: c.profile === "OWNER" || c.profile === "ADMIN" }),
 

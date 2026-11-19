@@ -118,7 +118,7 @@ export function OsHome({ data, board, owner, locationName, profit, loading, erro
     { label: "Ventas cerradas", value: money(data.salesRefToday), unit: "", note: plural(data.closedOrdersToday, "orden cerrada", "órdenes cerradas"), href: "/orders" },
     { label: "Ganancia de hoy", value: loading || profit === undefined ? <Skel w={128} h={30} /> : profit?.total == null ? "—" : fmtRef(profit.total), unit: "",
       note: !profit ? "Tienda y taller por separado" : `Tienda ${profit.store == null ? "—" : fmtRef(profit.store)} · Taller ${profit.workshop == null ? "—" : fmtRef(profit.workshop)}`, href: "/finance/profit" },
-    { label: "Cobros registrados", value: money(data.collectedRefToday), unit: "", note: "Incluye abonos; no es saldo bancario", href: "/finance" },
+    { label: "Cobros registrados", value: money(data.collectedRefToday), unit: "", note: "Incluye abonos; no es saldo bancario", href: "/orders" },
     { label: "Crédito LC pendiente", value: loading ? <Skel w={128} h={30} /> : fmtVes(data.receivablesOutstandingVes), unit: "", note: plural(data.receivablesOpen, "cuenta abierta", "cuentas abiertas"), href: "/receivables" },
   ] : [
     { label: "Vehículos activos", value: n(data.activeVehicles), unit: "", note: "Dentro del flujo del taller", href: "/workshop" },
@@ -136,15 +136,15 @@ export function OsHome({ data, board, owner, locationName, profit, loading, erro
   if (owner && data.payrollPendingRef > 0) pending.push({ href: "/payroll", icon: "cal", level: "Esta semana", title: "Nómina por liquidar", note: fmtRef(data.payrollPendingRef) + " pendientes", count: 1 });
 
   const tools: { href: string; icon: OsIconName; title: string; note: string }[] = owner ? [
-    { href: "/cash-close", icon: "cash", title: "Cerrar caja", note: "Contar y cerrar la jornada" },
-    { href: "/finance/reconcile", icon: "shield", title: "Conciliación semanal", note: "Verificar bancos y movimientos" },
-    { href: "/finance/inbox", icon: "alert", title: "Casos financieros", note: "Reportes e incidencias pendientes" },
+    { href: "/cashea/conciliacion", icon: "shield", title: "Conciliación Cashea", note: "Cuotas verificadas con el banco" },
+    { href: "/finance/profit", icon: "cash", title: "Ganancias", note: "Tienda y taller por separado" },
+    { href: "/receivables", icon: "credit", title: "Crédito LC", note: "Consultar y cobrar abonos" },
     { href: "/expenses", icon: "inventory", title: "Compras y proveedores", note: "Facturas y cuentas por pagar" },
   ] : [
-    { href: "/cash-close", icon: "check", title: "Cerrar caja", note: "Contar y cerrar la jornada" },
+    { href: "/cashea", icon: "check", title: "Órdenes Cashea", note: "Cuotas y cobros de Cashea" },
     { href: "/receivables", icon: "credit", title: "Crédito LC", note: "Consultar y cobrar abonos" },
     { href: "/customers", icon: "customers", title: "Buscar cliente", note: "Historial y vehículos" },
-    { href: "/cash", icon: "cash", title: "Movimientos de caja", note: "Egresos y transferencias" },
+    { href: "/inventory", icon: "inventory", title: "Inventario", note: "Existencia, precios y ajustes" },
   ];
 
   const plates = (stage: string) => board.filter(row => row.workflow_status === stage).slice(0, 3);

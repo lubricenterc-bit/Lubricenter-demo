@@ -311,9 +311,10 @@ export const orders: Record<string, Handler> = {
   },
   validate_order_ready_to_close: (a, c) => {
     const o = openOrder(c, a.p_order_id);
+    // Revisa los datos de la orden (no el cobro, que viene después).
     if (!linesOf(c, o.id).length) fail("La orden no tiene productos ni servicios.");
-    const left = Number(o.total_ref) - paidRef(c, o);
-    if (left > 0.01) fail(`Falta cobrar ${r2(left).toFixed(2)} REF para cerrar la orden.`);
+    const oil = linesOf(c, o.id).find(l => l.item_type === "SERVICE" && l.business_area === "OIL_CHANGE");
+    if (oil && !(oil.service_vehicle_id ?? o.vehicle_id)) fail("El cambio de aceite necesita el vehículo.");
     return null;
   },
   close_order: (a, c) => {
